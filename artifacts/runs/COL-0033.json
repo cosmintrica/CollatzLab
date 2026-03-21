@@ -1,0 +1,78 @@
+{
+  "processed": 61,
+  "last_processed": 260,
+  "max_total_stopping_time": {
+    "n": 231,
+    "value": 127
+  },
+  "max_stopping_time": {
+    "n": 223,
+    "value": 50
+  },
+  "max_excursion": {
+    "n": 255,
+    "value": 13120
+  },
+  "sample_records": [
+    {
+      "metric": "max_total_stopping_time",
+      "n": 200,
+      "value": 26
+    },
+    {
+      "metric": "max_stopping_time",
+      "n": 200,
+      "value": 1
+    },
+    {
+      "metric": "max_excursion",
+      "n": 200,
+      "value": 200
+    },
+    {
+      "metric": "max_stopping_time",
+      "n": 201,
+      "value": 3
+    },
+    {
+      "metric": "max_excursion",
+      "n": 201,
+      "value": 1024
+    },
+    {
+      "metric": "max_total_stopping_time",
+      "n": 203,
+      "value": 39
+    },
+    {
+      "metric": "max_stopping_time",
+      "n": 203,
+      "value": 8
+    },
+    {
+      "metric": "max_total_stopping_time",
+      "n": 206,
+      "value": 88
+    },
+    {
+      "metric": "max_excursion",
+      "n": 206,
+      "value": 9232
+    },
+    {
+      "metric": "max_stopping_time",
+      "n": 207,
+      "value": 21
+    },
+    {
+      "metric": "max_total_stopping_time",
+      "n": 214,
+      "value": 101
+    },
+    {
+      "metric": "max_total_stopping_time",
+      "n": 216,
+      "value": 114
+    }
+  ]
+}

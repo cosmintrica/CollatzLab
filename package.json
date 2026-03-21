@@ -1,0 +1,22 @@
+{
+  "name": "collatz-lab-workspace",
+  "private": true,
+  "scripts": {
+    "dashboard:dev": "npm --prefix dashboard run dev",
+    "dashboard:build": "npm --prefix dashboard run build",
+    "backend:test": "pytest backend/tests",
+    "stack:start": "powershell -ExecutionPolicy Bypass -File .\\scripts\\dev-stack.ps1 start",
+    "stack:start:worker": "powershell -ExecutionPolicy Bypass -File .\\scripts\\dev-stack.ps1 start -WithWorker",
+    "stack:start:workers": "powershell -ExecutionPolicy Bypass -File .\\scripts\\dev-stack.ps1 start -WithWorker",
+    "stack:start:cpu": "powershell -ExecutionPolicy Bypass -File .\\scripts\\run-worker.ps1 -Name managed-worker-cpu -Hardware cpu",
+    "stack:start:gpu": "powershell -ExecutionPolicy Bypass -File .\\scripts\\run-worker.ps1 -Name managed-worker-gpu -Hardware gpu",
+    "stack:start:vite": "powershell -ExecutionPolicy Bypass -File .\\scripts\\dev-stack.ps1 start -FrontendMode vite",
+    "stack:start:vite:worker": "powershell -ExecutionPolicy Bypass -File .\\scripts\\dev-stack.ps1 start -FrontendMode vite -WithWorker",
+    "stack:stop": "powershell -ExecutionPolicy Bypass -File .\\scripts\\dev-stack.ps1 stop",
+    "stack:restart": "powershell -ExecutionPolicy Bypass -File .\\scripts\\dev-stack.ps1 restart",
+    "stack:restart:worker": "powershell -ExecutionPolicy Bypass -File .\\scripts\\dev-stack.ps1 restart -WithWorker",
+    "stack:restart:workers": "powershell -ExecutionPolicy Bypass -File .\\scripts\\dev-stack.ps1 restart -WithWorker",
+    "stack:restart:vite": "powershell -ExecutionPolicy Bypass -File .\\scripts\\dev-stack.ps1 restart -FrontendMode vite",
+    "stack:status": "powershell -ExecutionPolicy Bypass -File .\\scripts\\dev-stack.ps1 status"
+  }
+}

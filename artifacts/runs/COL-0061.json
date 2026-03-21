@@ -1,0 +1,78 @@
+{
+  "processed": 300000000,
+  "last_processed": 300000000,
+  "max_total_stopping_time": {
+    "n": 268549803,
+    "value": 964
+  },
+  "max_stopping_time": {
+    "n": 217740015,
+    "value": 644
+  },
+  "max_excursion": {
+    "n": 210964383,
+    "value": 6404797161121264
+  },
+  "sample_records": [
+    {
+      "metric": "max_total_stopping_time",
+      "n": 1,
+      "value": 0
+    },
+    {
+      "metric": "max_stopping_time",
+      "n": 1,
+      "value": 0
+    },
+    {
+      "metric": "max_excursion",
+      "n": 1,
+      "value": 1
+    },
+    {
+      "metric": "max_total_stopping_time",
+      "n": 2,
+      "value": 1
+    },
+    {
+      "metric": "max_stopping_time",
+      "n": 2,
+      "value": 1
+    },
+    {
+      "metric": "max_excursion",
+      "n": 2,
+      "value": 2
+    },
+    {
+      "metric": "max_total_stopping_time",
+      "n": 3,
+      "value": 7
+    },
+    {
+      "metric": "max_stopping_time",
+      "n": 3,
+      "value": 6
+    },
+    {
+      "metric": "max_excursion",
+      "n": 3,
+      "value": 16
+    },
+    {
+      "metric": "max_total_stopping_time",
+      "n": 6,
+      "value": 8
+    },
+    {
+      "metric": "max_total_stopping_time",
+      "n": 7,
+      "value": 16
+    },
+    {
+      "metric": "max_stopping_time",
+      "n": 7,
+      "value": 11
+    }
+  ]
+}

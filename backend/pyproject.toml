@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "collatz-lab"
+version = "0.1.0"
+description = "Local-first research lab for Collatz exploration."
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+  "fastapi>=0.116,<1",
+  "numpy>=2.2,<3",
+  "numba>=0.63,<0.65",
+  "pydantic>=2.11,<3",
+  "uvicorn[standard]>=0.35,<1"
+]
+
+[project.optional-dependencies]
+dev = [
+  "httpx>=0.28,<1",
+  "pytest>=8.3,<9"
+]
+gpu = [
+  "nvidia-cuda-runtime-cu12>=12.4,<13",
+  "nvidia-cuda-nvcc-cu12>=12.4,<13",
+  "nvidia-nvvm>=13,<14"
+]
+
+[project.scripts]
+lab = "collatz_lab.cli:main"
+collatz-lab-api = "collatz_lab.main:run"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
