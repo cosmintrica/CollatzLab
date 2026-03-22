@@ -82,11 +82,22 @@ Work items:
 - separate worker contract, not mixed into the API server;
 - same run metadata shape as CPU runs;
 - replay on small ranges against CPU before trusting larger sweeps.
+- move hardware discovery toward platform adapters: Windows/Linux/macOS plus x86_64 and ARM64.
+- keep CPU fallback universal, then add GPU runtimes per platform: CUDA, Metal, or CPU-only.
 
 3. Distributed execution
 - optional remote workers later;
 - queue and lease model for parallel agents or machines;
 - reproducible environment snapshots.
+- central coordinator, worker registration, shard assignment, artifact upload, dedupe, and independent revalidation.
+
+Target operating model for this phase:
+
+- keep the project open source;
+- run one main platform under the maintainer's control as the canonical coordinator;
+- let outside contributors run a separate `worker-agent` on their own machines;
+- send contributed runs, artifacts, and validation payloads back to the maintainer-controlled database;
+- never trust remote compute blindly; important results must still be revalidated on independent hardware before promotion.
 
 Acceptance:
 
@@ -160,6 +171,32 @@ Planned approach:
 - for local managed stack, serve a stable built snapshot;
 - for development, continue supporting Vite hot reload;
 - when needed, deploy the dashboard separately to Vercel.
+- keep the backend ready for a later coordinator mode so multiple outside workers can centralize results into one lab.
+
+Longer-term hosted shape:
+
+- the public website can live on Vercel as the main dashboard surface;
+- the canonical coordinator API and database stay under the maintainer's control;
+- compute does not happen on Vercel; it happens on local or remote worker agents.
+
+## Phase 6: Federated Open Compute
+
+Planned operating model:
+
+- one maintainer-owned main platform acts as the canonical source of truth;
+- the repo remains open source;
+- anyone can install and run a `worker-agent` locally to contribute bounded compute;
+- worker agents register capabilities, ask for jobs, execute them locally, and upload results;
+- the central platform deduplicates work, tracks provenance, and revalidates important results.
+
+Core requirements:
+
+- worker registration and capability discovery;
+- signed or authenticated job/result exchange;
+- shard assignment for bounded intervals or bounded theory probes;
+- artifact upload plus reproducibility metadata;
+- trust and quarantine rules for unverified remote results;
+- independent rechecks before a remote result affects claim status.
 
 ## Rules of Work
 

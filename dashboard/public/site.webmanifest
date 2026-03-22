@@ -1,0 +1,16 @@
+{
+  "name": "Collatz Lab",
+  "short_name": "CollatzLab",
+  "description": "Local-first Collatz research platform.",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ],
+  "theme_color": "#f3e4ca",
+  "background_color": "#fff8ee",
+  "display": "standalone"
+}

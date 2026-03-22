@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collatz_lab.repository import LabRepository
-from collatz_lab.schemas import MapVariant, ReviewRubric, RunStatus, SourceStatus
+from collatz_lab.schemas import MapVariant, ReviewRubric, RunStatus, SourceReviewMode, SourceStatus
 from collatz_lab.services import execute_run, generate_report, validate_run
 
 
@@ -11,6 +11,8 @@ def test_repository_seeds_default_directions(repository: LabRepository):
         "verification",
         "inverse-tree-parity",
         "lemma-workspace",
+        "two-adic-v2",
+        "hypothesis-sandbox",
     }
 
 
@@ -92,6 +94,13 @@ def test_source_review_refreshes_note_and_snapshot(repository: LabRepository):
     review_snapshots = list((repository.settings.artifacts_dir / "reviews").glob(f"{source.id}-*.md"))
     assert review_snapshots
 
+    history = repository.list_source_reviews(source.id)
+    assert len(history) == 2
+    assert history[0].mode == SourceReviewMode.MANUAL
+    assert history[0].review_status == SourceStatus.FLAGGED
+    assert history[1].mode == SourceReviewMode.INTAKE
+    assert history[1].review_status == SourceStatus.INTAKE
+
 
 def test_register_worker_requeues_orphaned_running_runs(repository: LabRepository):
     run = repository.create_run(
@@ -120,3 +129,24 @@ def test_register_worker_requeues_orphaned_running_runs(repository: LabRepositor
     assert worker.status == "idle"
     assert recovered_run.status == RunStatus.QUEUED
     assert "Recovered after worker restart" in recovered_run.summary
+
+
+def test_delete_source_removes_reviews_and_files(repository: LabRepository):
+    source = repository.create_source(
+        direction_slug="lemma-workspace",
+        title="Delete me",
+        summary="Temporary local source.",
+    )
+    repository.update_source_review(
+        source.id,
+        review_status=SourceStatus.FLAGGED,
+        notes="Temporary review snapshot.",
+    )
+
+    result = repository.delete_source(source.id)
+
+    assert result["deleted"] is True
+    assert source.id == result["id"]
+    assert not (repository.settings.research_dir / "sources" / f"{source.id}.md").exists()
+    assert not list((repository.settings.artifacts_dir / "reviews").glob(f"{source.id}-*.md"))
+    assert not any(item.id == source.id for item in repository.list_sources())

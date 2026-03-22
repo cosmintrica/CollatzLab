@@ -13,6 +13,7 @@ from .schemas import (
     ArtifactKind,
     Claim,
     ClaimRunLink,
+    ComputeProfile,
     ConsensusBaseline,
     ConsensusBaselineItem,
     DashboardSummary,
@@ -27,6 +28,8 @@ from .schemas import (
     ReviewRubric,
     Source,
     SourceClaimType,
+    SourceReviewEvent,
+    SourceReviewMode,
     SourceStatus,
     SourceType,
     Task,
@@ -60,6 +63,27 @@ DEFAULT_DIRECTIONS: tuple[dict[str, str], ...] = (
         "owner": "integrator",
         "success_criteria": "Promote evidence-backed claims toward formalization without manual rewrites.",
         "abandon_criteria": "Claims repeatedly fail against linked evidence or never accumulate support.",
+    },
+    {
+        "slug": "two-adic-v2",
+        "title": "2-adic / v2 Explorer",
+        "description": "Study v2(3n+1), odd-only compression, residue lifting, and 2-adic structural signals.",
+        "owner": "theory-agent",
+        "success_criteria": "Find stable v2 or residue patterns that survive extension and suggest a concrete next probe.",
+        "abandon_criteria": "Candidate 2-adic regularities collapse under wider record-seed or odd-only testing.",
+    },
+    {
+        "slug": "hypothesis-sandbox",
+        "title": "Hypothesis Sandbox",
+        "description": (
+            "Experimental track for generating and testing novel mathematical hypotheses. "
+            "Produces hypotheses, transformations, and probes/falsifiers — never promotes "
+            "directly to supported/validated claims. All results remain isolated from the "
+            "verification pipeline."
+        ),
+        "owner": "theory-agent",
+        "success_criteria": "Generate falsifiable hypotheses with clear test criteria and accumulate plausible patterns worth formal investigation.",
+        "abandon_criteria": "Hypotheses consistently falsified on first test or produce only noise without actionable patterns.",
     },
 )
 
@@ -190,8 +214,10 @@ class LabRepository:
                 ("global", 0),
             )
             conn.commit()
+        self.seed_runtime_settings()
         self.seed_default_directions()
         self.seed_direction_notes()
+        self.seed_initial_tasks()
 
     def _migrate_schema(self, conn) -> None:
         source_columns = {
@@ -241,11 +267,80 @@ class LabRepository:
             "verification.md": "# Verification\n\n- Goal: build validated interval sweeps and track records.\n- Notes:\n",
             "inverse-tree-parity.md": "# Inverse Tree Parity\n\n- Goal: study reverse trees and parity constraints.\n- Notes:\n",
             "lemma-workspace.md": "# Lemma Workspace\n\n- Goal: record claims, dependencies, and counterexamples.\n- Notes:\n",
+            "two-adic-v2.md": "# 2-adic / v2 Explorer\n\n- Goal: study odd-only compression, v2(3n+1), and residue lifting.\n- Notes:\n",
         }
         for name, content in templates.items():
             path = self.settings.research_dir / "directions" / name
             if not path.exists():
                 path.write_text(content, encoding="utf-8")
+
+    def seed_runtime_settings(self) -> None:
+        timestamp = utc_now()
+        with connect(str(self.settings.db_path)) as conn:
+            existing = conn.execute(
+                "SELECT value_json FROM runtime_settings WHERE key = ?",
+                ("compute_profile",),
+            ).fetchone()
+            if existing is None:
+                conn.execute(
+                    "INSERT INTO runtime_settings(key, value_json, updated_at) VALUES (?, ?, ?)",
+                    (
+                        "compute_profile",
+                        json.dumps(
+                            {
+                                "system_percent": 100,
+                                "cpu_percent": 100,
+                                "gpu_percent": 100,
+                            }
+                        ),
+                        timestamp,
+                    ),
+                )
+                conn.commit()
+
+    def seed_initial_tasks(self) -> None:
+        seeds = (
+            {
+                "direction_slug": "two-adic-v2",
+                "title": "Profile v2(3n+1) on current record seeds",
+                "kind": "analysis",
+                "description": "Summarize v2(3n+1) valuations, odd-only compression, and residue classes for current record seeds.",
+                "owner": "theory-agent",
+                "priority": 2,
+            },
+        )
+        with connect(str(self.settings.db_path)) as conn:
+            existing_signatures = {
+                (row["direction_slug"].strip().lower(), row["title"].strip().lower())
+                for row in conn.execute("SELECT direction_slug, title FROM tasks").fetchall()
+            }
+            timestamp = utc_now()
+            for spec in seeds:
+                signature = (spec["direction_slug"].strip().lower(), spec["title"].strip().lower())
+                if signature in existing_signatures:
+                    continue
+                conn.execute(
+                    """
+                    INSERT INTO tasks(
+                      id, direction_slug, title, kind, description,
+                      owner, status, priority, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        self.next_id(conn),
+                        spec["direction_slug"],
+                        spec["title"],
+                        spec["kind"],
+                        spec["description"],
+                        spec["owner"],
+                        TaskStatus.OPEN.value,
+                        spec["priority"],
+                        timestamp,
+                        timestamp,
+                    ),
+                )
+                existing_signatures.add(signature)
+            conn.commit()
 
     def next_id(self, conn=None) -> str:
         owns_connection = conn is None
@@ -306,6 +401,38 @@ class LabRepository:
                     timestamp,
                     timestamp,
                 ),
+            )
+            conn.commit()
+        return self.get_task(task_id)
+
+    def update_task(
+        self,
+        task_id: str,
+        *,
+        status: TaskStatus | str | None = None,
+        owner: str | None = None,
+        description: str | None = None,
+        priority: int | None = None,
+    ) -> Task:
+        fields = ["updated_at = ?"]
+        values: list[Any] = [utc_now()]
+        if status is not None:
+            fields.append("status = ?")
+            values.append(status.value if isinstance(status, TaskStatus) else status)
+        if owner is not None:
+            fields.append("owner = ?")
+            values.append(owner)
+        if description is not None:
+            fields.append("description = ?")
+            values.append(description)
+        if priority is not None:
+            fields.append("priority = ?")
+            values.append(priority)
+        values.append(task_id)
+        with connect(str(self.settings.db_path)) as conn:
+            conn.execute(
+                f"UPDATE tasks SET {', '.join(fields)} WHERE id = ?",
+                values,
             )
             conn.commit()
         return self.get_task(task_id)
@@ -465,6 +592,11 @@ class LabRepository:
             conn.commit()
         return self.get_run(run_id)
 
+    def delete_run(self, run_id: str) -> None:
+        with connect(str(self.settings.db_path)) as conn:
+            conn.execute("DELETE FROM runs WHERE id = ?", (run_id,))
+            conn.commit()
+
     def update_worker(
         self,
         worker_id: str,
@@ -586,6 +718,34 @@ class LabRepository:
             conn.commit()
         return self.get_claim(claim_id)
 
+    def update_claim(
+        self,
+        claim_id: str,
+        *,
+        statement: str | None = None,
+        notes: str | None = None,
+        status: str | None = None,
+    ) -> Claim:
+        fields = ["updated_at = ?"]
+        values: list[Any] = [utc_now()]
+        if statement is not None:
+            fields.append("statement = ?")
+            values.append(statement)
+        if notes is not None:
+            fields.append("notes = ?")
+            values.append(notes)
+        if status is not None:
+            fields.append("status = ?")
+            values.append(status)
+        values.append(claim_id)
+        with connect(str(self.settings.db_path)) as conn:
+            conn.execute(
+                f"UPDATE claims SET {', '.join(fields)} WHERE id = ?",
+                values,
+            )
+            conn.commit()
+        return self.get_claim(claim_id)
+
     def list_fallacy_tags(self) -> list[FallacyTagInfo]:
         return list(FALLACY_TAG_CATALOG)
 
@@ -637,6 +797,62 @@ class LabRepository:
             encoding="utf-8",
         )
         return review_path
+
+    def _record_source_review_event(
+        self,
+        *,
+        source_id: str,
+        reviewer: str,
+        mode: SourceReviewMode | str,
+        review_status: SourceStatus | str | None = None,
+        map_variant: MapVariant | str | None = None,
+        summary: str = "",
+        notes: str = "",
+        fallacy_tags: list[str] | None = None,
+        rubric: ReviewRubric | None = None,
+        llm_provider: str = "",
+        llm_model: str = "",
+        extra: dict[str, Any] | None = None,
+    ) -> SourceReviewEvent:
+        timestamp = utc_now()
+        normalized_mode = mode.value if isinstance(mode, SourceReviewMode) else str(mode)
+        normalized_status = (
+            review_status.value if isinstance(review_status, SourceStatus) else review_status
+        )
+        normalized_variant = (
+            map_variant.value if isinstance(map_variant, MapVariant) else map_variant
+        )
+        normalized_tags = normalize_fallacy_tags(fallacy_tags)
+        rubric_model = rubric or ReviewRubric()
+        payload_extra = extra or {}
+        with connect(str(self.settings.db_path)) as conn:
+            review_id = self.next_id(conn)
+            conn.execute(
+                """
+                INSERT INTO source_reviews(
+                  id, source_id, reviewer, mode, review_status, map_variant, summary, notes,
+                  fallacy_tags_json, rubric_json, llm_provider, llm_model, extra_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    review_id,
+                    source_id,
+                    reviewer,
+                    normalized_mode,
+                    normalized_status,
+                    normalized_variant,
+                    summary,
+                    notes,
+                    json.dumps(normalized_tags),
+                    rubric_model.model_dump_json(),
+                    llm_provider,
+                    llm_model,
+                    json.dumps(payload_extra),
+                    timestamp,
+                ),
+            )
+            conn.commit()
+        return self.get_source_review_event(review_id)
 
     def create_source(
         self,
@@ -701,6 +917,17 @@ class LabRepository:
                 "claim_type": claim_type.value,
             },
         )
+        self._record_source_review_event(
+            source_id=source.id,
+            reviewer="system",
+            mode=SourceReviewMode.INTAKE,
+            review_status=source.review_status,
+            map_variant=source.map_variant,
+            summary=source.summary,
+            notes=source.notes,
+            fallacy_tags=source.fallacy_tags,
+            rubric=source.rubric,
+        )
         return source
 
     def update_source_review(
@@ -763,7 +990,108 @@ class LabRepository:
                 "review_status": source.review_status.value,
             },
         )
+        self._record_source_review_event(
+            source_id=source.id,
+            reviewer="integrator",
+            mode=SourceReviewMode.MANUAL,
+            review_status=source.review_status,
+            map_variant=source.map_variant,
+            summary=source.summary,
+            notes=source.notes,
+            fallacy_tags=source.fallacy_tags,
+            rubric=source.rubric,
+        )
         return source
+
+    def record_source_llm_draft(
+        self,
+        source_id: str,
+        *,
+        provider: str,
+        model: str,
+        review_status: SourceStatus,
+        map_variant: MapVariant,
+        summary: str,
+        notes: str,
+        fallacy_tags: list[str],
+        rubric: ReviewRubric,
+        candidate_claims: list[str],
+        deterministic_checks: list[str],
+        warnings: list[str],
+        raw_text: str = "",
+    ) -> SourceReviewEvent:
+        return self._record_source_review_event(
+            source_id=source_id,
+            reviewer="llm",
+            mode=SourceReviewMode.LLM_SUGGESTION,
+            review_status=review_status,
+            map_variant=map_variant,
+            summary=summary,
+            notes=notes,
+            fallacy_tags=fallacy_tags,
+            rubric=rubric,
+            llm_provider=provider,
+            llm_model=model,
+            extra={
+                "candidate_claims": candidate_claims,
+                "deterministic_checks": deterministic_checks,
+                "warnings": warnings,
+                "raw_text": raw_text,
+            },
+        )
+
+    def delete_source(self, source_id: str) -> dict[str, object]:
+        source = self.get_source(source_id)
+        note_relative = f"research/sources/{source.id}.md".replace("\\", "/")
+        review_prefix = f"artifacts/reviews/{source.id}-".replace("\\", "/")
+        deleted_artifact_ids: list[str] = []
+        deleted_files: list[str] = []
+
+        with connect(str(self.settings.db_path)) as conn:
+            artifact_rows = conn.execute("SELECT id, path, metadata_json FROM artifacts").fetchall()
+            artifact_ids_to_delete: list[str] = []
+            artifact_paths_to_delete: list[str] = []
+            for row in artifact_rows:
+                metadata = json.loads(row["metadata_json"])
+                path = str(row["path"]).replace("\\", "/")
+                if (
+                    metadata.get("source_id") == source_id
+                    or path == note_relative
+                    or path.startswith(review_prefix)
+                ):
+                    artifact_ids_to_delete.append(row["id"])
+                    artifact_paths_to_delete.append(path)
+
+            conn.execute("DELETE FROM source_reviews WHERE source_id = ?", (source_id,))
+            if artifact_ids_to_delete:
+                placeholders = ", ".join("?" for _ in artifact_ids_to_delete)
+                conn.execute(
+                    f"DELETE FROM artifacts WHERE id IN ({placeholders})",
+                    artifact_ids_to_delete,
+                )
+            conn.execute("DELETE FROM sources WHERE id = ?", (source_id,))
+            conn.commit()
+            deleted_artifact_ids = artifact_ids_to_delete
+
+        for relative_path in artifact_paths_to_delete:
+            candidate = self.settings.workspace_root / Path(relative_path)
+            if candidate.exists():
+                candidate.unlink()
+                deleted_files.append(relative_path)
+
+        note_path = self.settings.research_dir / "sources" / f"{source.id}.md"
+        if note_path.exists():
+            note_path.unlink()
+            relative = str(note_path.relative_to(self.settings.workspace_root))
+            if relative not in deleted_files:
+                deleted_files.append(relative)
+
+        return {
+            "id": source_id,
+            "deleted": True,
+            "deleted_artifact_ids": deleted_artifact_ids,
+            "deleted_files": deleted_files,
+        }
 
     def link_claim_run(self, *, claim_id: str, run_id: str, relation: str) -> ClaimRunLink:
         timestamp = utc_now()
@@ -829,18 +1157,33 @@ class LabRepository:
     def list_tasks(self) -> list[Task]:
         with connect(str(self.settings.db_path)) as conn:
             rows = conn.execute(
-                "SELECT * FROM tasks ORDER BY priority ASC, created_at DESC"
+                "SELECT * FROM tasks ORDER BY priority ASC, created_at DESC, id DESC"
             ).fetchall()
         return [Task.model_validate(dict(row)) for row in rows]
 
     def list_runs(self) -> list[Run]:
         with connect(str(self.settings.db_path)) as conn:
-            rows = conn.execute("SELECT * FROM runs ORDER BY created_at DESC").fetchall()
+            rows = conn.execute("SELECT * FROM runs ORDER BY created_at DESC, id DESC").fetchall()
         return [self._row_to_run(row) for row in rows]
 
-    def list_claims(self) -> list[Claim]:
+    def list_claims(self, *, exclude_direction: str | None = None) -> list[Claim]:
         with connect(str(self.settings.db_path)) as conn:
-            rows = conn.execute("SELECT * FROM claims ORDER BY created_at DESC").fetchall()
+            if exclude_direction:
+                rows = conn.execute(
+                    "SELECT * FROM claims WHERE direction_slug != ? ORDER BY created_at DESC, id DESC",
+                    (exclude_direction,),
+                ).fetchall()
+            else:
+                rows = conn.execute("SELECT * FROM claims ORDER BY created_at DESC, id DESC").fetchall()
+        return [self._row_to_claim(row) for row in rows]
+
+    def list_hypotheses(self) -> list[Claim]:
+        """List only hypothesis-sandbox claims (separated from main claims)."""
+        with connect(str(self.settings.db_path)) as conn:
+            rows = conn.execute(
+                "SELECT * FROM claims WHERE direction_slug = 'hypothesis-sandbox' "
+                "ORDER BY created_at DESC, id DESC"
+            ).fetchall()
         return [self._row_to_claim(row) for row in rows]
 
     def list_claim_run_links(self) -> list[ClaimRunLink]:
@@ -853,7 +1196,7 @@ class LabRepository:
     def list_artifacts(self) -> list[Artifact]:
         with connect(str(self.settings.db_path)) as conn:
             rows = conn.execute(
-                "SELECT * FROM artifacts ORDER BY created_at DESC"
+                "SELECT * FROM artifacts ORDER BY created_at DESC, id DESC"
             ).fetchall()
         return [self._row_to_artifact(row) for row in rows]
 
@@ -891,6 +1234,20 @@ class LabRepository:
                 "SELECT * FROM sources ORDER BY updated_at DESC, created_at DESC"
             ).fetchall()
         return [self._row_to_source(row) for row in rows]
+
+    def list_source_reviews(self, source_id: str) -> list[SourceReviewEvent]:
+        self.get_source(source_id)
+        with connect(str(self.settings.db_path)) as conn:
+            rows = conn.execute(
+                """
+                SELECT *
+                FROM source_reviews
+                WHERE source_id = ?
+                ORDER BY created_at DESC, id DESC
+                """,
+                (source_id,),
+            ).fetchall()
+        return [self._row_to_source_review(row) for row in rows]
 
     def get_task(self, task_id: str) -> Task:
         with connect(str(self.settings.db_path)) as conn:
@@ -965,6 +1322,16 @@ class LabRepository:
         if row is None:
             raise KeyError(f"Source not found: {source_id}")
         return self._row_to_source(row)
+
+    def get_source_review_event(self, review_id: str) -> SourceReviewEvent:
+        with connect(str(self.settings.db_path)) as conn:
+            row = conn.execute(
+                "SELECT * FROM source_reviews WHERE id = ?",
+                (review_id,),
+            ).fetchone()
+        if row is None:
+            raise KeyError(f"Source review not found: {review_id}")
+        return self._row_to_source_review(row)
 
     def claim_next_run(
         self,
@@ -1120,6 +1487,45 @@ class LabRepository:
             latest_write_at=max(timestamps) if timestamps else None,
         )
 
+    def get_compute_profile(self) -> ComputeProfile:
+        with connect(str(self.settings.db_path)) as conn:
+            row = conn.execute(
+                "SELECT value_json, updated_at FROM runtime_settings WHERE key = ?",
+                ("compute_profile",),
+            ).fetchone()
+        payload = {"system_percent": 100, "cpu_percent": 100, "gpu_percent": 100}
+        updated_at = None
+        if row:
+            payload.update(json.loads(row["value_json"] or "{}"))
+            updated_at = row["updated_at"]
+        payload["updated_at"] = updated_at
+        return ComputeProfile.model_validate(payload)
+
+    def update_compute_profile(
+        self,
+        *,
+        system_percent: int,
+        cpu_percent: int,
+        gpu_percent: int,
+    ) -> ComputeProfile:
+        timestamp = utc_now()
+        payload = {
+            "system_percent": max(0, min(100, int(system_percent))),
+            "cpu_percent": max(0, min(100, int(cpu_percent))),
+            "gpu_percent": max(0, min(100, int(gpu_percent))),
+        }
+        with connect(str(self.settings.db_path)) as conn:
+            conn.execute(
+                """
+                INSERT INTO runtime_settings(key, value_json, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at
+                """,
+                ("compute_profile", json.dumps(payload), timestamp),
+            )
+            conn.commit()
+        return self.get_compute_profile()
+
     def consensus_baseline(self) -> ConsensusBaseline:
         return CONSENSUS_BASELINE
 
@@ -1238,3 +1644,10 @@ class LabRepository:
         payload["fallacy_tags"] = json.loads(payload.pop("fallacy_tags_json"))
         payload["rubric"] = ReviewRubric.model_validate(json.loads(payload.pop("rubric_json")))
         return Source.model_validate(payload)
+
+    def _row_to_source_review(self, row) -> SourceReviewEvent:
+        payload = dict(row)
+        payload["fallacy_tags"] = json.loads(payload.pop("fallacy_tags_json"))
+        payload["rubric"] = ReviewRubric.model_validate(json.loads(payload.pop("rubric_json")))
+        payload["extra"] = json.loads(payload.pop("extra_json"))
+        return SourceReviewEvent.model_validate(payload)

@@ -5,18 +5,34 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
-from .config import Settings
+from .autopilot import AutopilotManager, run_autopilot_cycle
+from .config import Settings, write_env_updates
 from .hardware import discover_hardware, validate_execution_request
-from .llm import get_llm_provider_status
+from .llm import (
+    generate_source_review_draft,
+    get_llm_provider_status,
+)
 from .reddit_feed import fetch_subreddit_feed
 from .repository import LabRepository
+from .hypothesis import (
+    analyze_record_seeds,
+    analyze_residue_classes,
+    run_hypothesis_battery,
+    scan_trajectory_depths,
+    test_stopping_time_growth,
+)
 from .schemas import (
     Artifact,
     Claim,
     ClaimRunLink,
+    ComputeProfile,
     ConsensusBaseline,
     DirectionReview,
     FallacyTagInfo,
+    Hypothesis,
+    LLMAutopilotRun,
+    LLMAutopilotStatus,
+    LLMReviewDraft,
     MapVariant,
     ModularProbeResult,
     RedditFeed,
@@ -24,6 +40,7 @@ from .schemas import (
     Run,
     Source,
     SourceClaimType,
+    SourceReviewEvent,
     SourceStatus,
     SourceType,
     Task,
@@ -99,10 +116,68 @@ class ModularProbeRequest(BaseModel):
     search_limit: int = 2048
 
 
+class LLMSetupRequest(BaseModel):
+    api_key: str
+    enabled: bool = True
+    model: str = "gemini-2.5-flash"
+
+
+class LLMAutopilotRequest(BaseModel):
+    apply: bool = False
+    max_tasks: int = 3
+
+
+class LLMAutopilotConfigRequest(BaseModel):
+    enabled: bool
+    interval_seconds: int = 7200
+    max_tasks: int = 2
+
+
+class ComputeProfileRequest(BaseModel):
+    system_percent: int = 100
+    cpu_percent: int = 100
+    gpu_percent: int = 100
+
+
+class HypothesisBatteryRequest(BaseModel):
+    end: int = 50_000
+    moduli: list[int] = [3, 4, 6, 8, 12, 16]
+
+
+class ResidueClassRequest(BaseModel):
+    modulus: int
+    start: int = 1
+    end: int = 100_000
+    odd_only: bool = True
+
+
+class RecordSeedRequest(BaseModel):
+    start: int = 1
+    end: int = 100_000
+
+
+class TrajectoryDepthRequest(BaseModel):
+    start: int = 1
+    end: int = 50_000
+    top_k: int = 20
+
+
+class GrowthRateRequest(BaseModel):
+    start: int = 1
+    end: int = 100_000
+    bin_count: int = 20
+
+
 def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or Settings.from_env()
     repository = LabRepository(settings)
     repository.init()
+    autopilot_manager = AutopilotManager(
+        repository,
+        enabled=settings.llm_autopilot_enabled,
+        interval_seconds=settings.llm_autopilot_interval_seconds,
+        max_tasks=settings.llm_autopilot_max_tasks,
+    )
 
     app = FastAPI(title="Collatz Lab API", version="0.1.0")
     app.add_middleware(
@@ -113,6 +188,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         allow_headers=["*"],
     )
     app.state.repository = repository
+    app.state.autopilot_manager = autopilot_manager
+
+    if settings.llm_autopilot_enabled:
+        autopilot_manager.start()
+
+    @app.on_event("shutdown")
+    def shutdown_background_services() -> None:
+        autopilot_manager.stop()
 
     @app.get("/health")
     def health() -> dict[str, str]:
@@ -130,9 +213,73 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def hardware():
         return discover_hardware()
 
+    @app.get("/api/compute/profile", response_model=ComputeProfile)
+    def compute_profile():
+        return repository.get_compute_profile()
+
+    @app.post("/api/compute/profile", response_model=ComputeProfile)
+    def update_compute_profile(request: ComputeProfileRequest):
+        return repository.update_compute_profile(
+            system_percent=request.system_percent,
+            cpu_percent=request.cpu_percent,
+            gpu_percent=request.gpu_percent,
+        )
+
     @app.get("/api/llm/status")
     def llm_status():
         return get_llm_provider_status()
+
+    @app.post("/api/llm/setup")
+    def llm_setup(request: LLMSetupRequest):
+        api_key = request.api_key.strip()
+        if not api_key:
+            raise HTTPException(status_code=400, detail="Gemini API key cannot be empty.")
+        write_env_updates(
+            settings.workspace_root,
+            {
+                "COLLATZ_LLM_ENABLED": "1" if request.enabled else "0",
+                "GEMINI_MODEL": request.model.strip() or "gemini-2.5-flash",
+                "GEMINI_API_KEY": api_key,
+            },
+        )
+        if autopilot_manager.status().enabled:
+            autopilot_manager.start()
+        return get_llm_provider_status()
+
+    @app.get("/api/llm/autopilot/status", response_model=LLMAutopilotStatus)
+    def llm_autopilot_status():
+        return autopilot_manager.status()
+
+    @app.post("/api/llm/autopilot/config", response_model=LLMAutopilotStatus)
+    def llm_autopilot_config(request: LLMAutopilotConfigRequest):
+        write_env_updates(
+            settings.workspace_root,
+            {
+                "COLLATZ_LLM_AUTOPILOT_ENABLED": "1" if request.enabled else "0",
+                "COLLATZ_LLM_AUTOPILOT_INTERVAL_SECONDS": str(max(60, request.interval_seconds)),
+                "COLLATZ_LLM_AUTOPILOT_MAX_TASKS": str(max(1, min(5, request.max_tasks))),
+            },
+        )
+        return autopilot_manager.configure(
+            enabled=request.enabled,
+            interval_seconds=request.interval_seconds,
+            max_tasks=request.max_tasks,
+        )
+
+    @app.post("/api/llm/autopilot/run", response_model=LLMAutopilotRun)
+    def llm_autopilot_run(request: LLMAutopilotRequest):
+        try:
+            plan = run_autopilot_cycle(
+                repository,
+                max_tasks=max(1, min(5, request.max_tasks)),
+                apply=request.apply,
+                mode="manual",
+            )
+        except RuntimeError as exc:
+            autopilot_manager.record_error(str(exc))
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        autopilot_manager.record_result(plan)
+        return plan
 
     @app.post("/api/directions/{slug}/review", response_model=DirectionReview)
     def review_direction(slug: str):
@@ -200,7 +347,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.get("/api/claims")
     def list_claims():
-        return repository.list_claims()
+        # Exclude hypothesis-sandbox claims from main claims list
+        return repository.list_claims(exclude_direction="hypothesis-sandbox")
+
+    @app.get("/api/hypotheses", response_model=list[Claim])
+    def list_hypotheses():
+        """Separate endpoint for hypothesis-sandbox claims."""
+        return repository.list_hypotheses()
 
     @app.get("/api/claim-run-links", response_model=list[ClaimRunLink])
     def list_claim_run_links():
@@ -267,6 +420,50 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+    @app.delete("/api/sources/{source_id}")
+    def delete_source(source_id: str):
+        try:
+            return repository.delete_source(source_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.get("/api/sources/{source_id}/reviews", response_model=list[SourceReviewEvent])
+    def source_review_history(source_id: str):
+        try:
+            return repository.list_source_reviews(source_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.post("/api/sources/{source_id}/review-draft", response_model=LLMReviewDraft)
+    def source_review_draft(source_id: str):
+        try:
+            source = repository.get_source(source_id)
+            draft = generate_source_review_draft(
+                source=source,
+                baseline=repository.consensus_baseline(),
+                allowed_tags=[item.tag for item in repository.list_fallacy_tags()],
+            )
+            repository.record_source_llm_draft(
+                source_id=source_id,
+                provider=draft.provider,
+                model=draft.model,
+                review_status=draft.review_status,
+                map_variant=draft.map_variant,
+                summary=draft.summary,
+                notes=draft.notes,
+                fallacy_tags=draft.fallacy_tags,
+                rubric=draft.rubric,
+                candidate_claims=draft.candidate_claims,
+                deterministic_checks=draft.deterministic_checks,
+                warnings=draft.warnings,
+                raw_text=draft.raw_text,
+            )
+            return draft
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+
     @app.get("/api/review/fallacy-tags", response_model=list[FallacyTagInfo])
     def fallacy_tags():
         return repository.list_fallacy_tags()
@@ -328,5 +525,54 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def report():
         path = generate_report(repository)
         return {"path": str(path.relative_to(repository.settings.workspace_root))}
+
+    # ── Hypothesis Sandbox ──
+
+    @app.post("/api/hypotheses/battery", response_model=list[Hypothesis])
+    def hypothesis_battery(request: HypothesisBatteryRequest):
+        try:
+            return run_hypothesis_battery(
+                repository,
+                end=request.end,
+                moduli=request.moduli,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/api/hypotheses/residue-class")
+    def hypothesis_residue_class(request: ResidueClassRequest):
+        try:
+            result = analyze_residue_classes(
+                request.modulus,
+                start=request.start,
+                end=request.end,
+                odd_only=request.odd_only,
+            )
+            return result.__dict__
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/api/hypotheses/record-seeds")
+    def hypothesis_record_seeds(request: RecordSeedRequest):
+        result = analyze_record_seeds(start=request.start, end=request.end)
+        return result.__dict__
+
+    @app.post("/api/hypotheses/trajectory-depths")
+    def hypothesis_trajectory_depths(request: TrajectoryDepthRequest):
+        result = scan_trajectory_depths(
+            start=request.start,
+            end=request.end,
+            top_k=request.top_k,
+        )
+        return result.__dict__
+
+    @app.post("/api/hypotheses/growth-rate")
+    def hypothesis_growth_rate(request: GrowthRateRequest):
+        result = test_stopping_time_growth(
+            start=request.start,
+            end=request.end,
+            bin_count=request.bin_count,
+        )
+        return result.__dict__
 
     return app

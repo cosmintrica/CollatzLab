@@ -25,8 +25,9 @@ The goal is to support several research activities in one place:
 - SQLite-backed local state for runs, claims, artifacts, workers, and sources
 - CPU worker loop and GPU worker path with resumable checkpoints
 - source intake workflow, consensus baseline, and fallacy tagging
+- source review history plus Gemini-assisted draft reviews in guarded `review_only` mode
+- guarded Gemini autopilot that turns local lab history into bounded task proposals and optional background task creation
 - Reddit intake rail for watching new `r/Collatz` threads without treating them as truth
-- Gemini integration scaffold with guarded `review_only` mode
 
 ## Research stance
 
@@ -37,6 +38,7 @@ This repo treats the problem conservatively:
 - external sources are intake material until reviewed
 - brute force is treated as evidence and falsification tooling, not the final strategy
 - theory work lives in claims, directions, source reviews, and lemma testing
+- Gemini can assist with review and planning, but it never becomes the source of truth
 
 ## Repository layout
 
@@ -66,12 +68,17 @@ This repo treats the problem conservatively:
 
    - edit `.env`
    - or copy `.env.example` to `.env`
+   - if no Gemini key is detected, the dashboard prompts for it automatically and stores it in the local `.env`
 
    Example Gemini setup:
 
    ```text
    COLLATZ_LLM_ENABLED=1
+   GEMINI_MODEL=gemini-3-flash-preview
    GEMINI_API_KEY=your_key_here
+   COLLATZ_LLM_AUTOPILOT_ENABLED=1
+   COLLATZ_LLM_AUTOPILOT_INTERVAL_SECONDS=1800
+   COLLATZ_LLM_AUTOPILOT_MAX_TASKS=3
    ```
 
 4. Initialize the workspace:
@@ -90,6 +97,16 @@ This repo treats the problem conservatively:
 
 - dashboard: `http://localhost:5173`
 - API health: `http://127.0.0.1:8000/health`
+
+## Vercel frontend hosting
+
+The dashboard is prepared for a frontend-only Vercel deploy.
+
+- `vercel.json` at the repo root points Vercel to `dashboard/`
+- the frontend reads `VITE_API_BASE_URL`
+- if `VITE_API_BASE_URL` is not set, the site falls back to the local API URL for desktop/local use
+
+For a hosted frontend, set `VITE_API_BASE_URL` in Vercel to the public backend URL you want the dashboard to call.
 
 ## Local commands
 
@@ -152,6 +169,7 @@ The higher-level plan lives in:
 - [`research/ROADMAP.md`](./research/ROADMAP.md)
 - [`research/DEVELOPMENT_BACKLOG.md`](./research/DEVELOPMENT_BACKLOG.md)
 - [`research/WORKER_QUEUE.md`](./research/WORKER_QUEUE.md)
+- [`research/FEDERATED_LAB.md`](./research/FEDERATED_LAB.md)
 
 ## Contributing
 
@@ -174,4 +192,4 @@ If you open an issue or PR, it helps if you are explicit about which of these yo
 
 ## License
 
-Released under the [MIT License](./LICENSE).
+Released under the [Apache License 2.0](./LICENSE).

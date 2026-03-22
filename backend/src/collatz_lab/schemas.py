@@ -71,6 +71,12 @@ class SourceStatus(StrEnum):
     CONTEXT = "context"
 
 
+class SourceReviewMode(StrEnum):
+    INTAKE = "intake"
+    MANUAL = "manual"
+    LLM_SUGGESTION = "llm_suggestion"
+
+
 class SourceClaimType(StrEnum):
     OPEN_PROBLEM_CONSENSUS = "open_problem_consensus"
     PARTIAL_RESULT = "partial_result"
@@ -185,6 +191,91 @@ class Source(BaseModel):
     updated_at: str
 
 
+class SourceReviewEvent(BaseModel):
+    id: str
+    source_id: str
+    reviewer: str
+    mode: SourceReviewMode
+    review_status: SourceStatus | None = None
+    map_variant: MapVariant | None = None
+    summary: str = ""
+    notes: str = ""
+    fallacy_tags: list[str] = Field(default_factory=list)
+    rubric: ReviewRubric = Field(default_factory=ReviewRubric)
+    llm_provider: str = ""
+    llm_model: str = ""
+    extra: dict[str, Any] = Field(default_factory=dict)
+    created_at: str
+
+
+class LLMReviewDraft(BaseModel):
+    source_id: str
+    provider: str
+    model: str
+    safety_mode: str
+    created_at: str
+    review_status: SourceStatus
+    map_variant: MapVariant
+    summary: str = ""
+    notes: str = ""
+    fallacy_tags: list[str] = Field(default_factory=list)
+    rubric: ReviewRubric = Field(default_factory=ReviewRubric)
+    candidate_claims: list[str] = Field(default_factory=list)
+    deterministic_checks: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    raw_text: str = ""
+
+
+class LLMAutopilotTask(BaseModel):
+    direction_slug: str
+    title: str
+    kind: str
+    description: str
+    priority: int = 2
+
+
+class LLMAutopilotRun(BaseModel):
+    provider: str
+    model: str
+    safety_mode: str
+    created_at: str
+    mode: str = "manual"
+    summary: str = ""
+    recommended_direction_slug: str = ""
+    recommended_direction_reason: str = ""
+    memory_mode: str = "local_history"
+    notes: list[str] = Field(default_factory=list)
+    task_proposals: list[LLMAutopilotTask] = Field(default_factory=list)
+    applied: bool = False
+    applied_task_ids: list[str] = Field(default_factory=list)
+    executed_task_ids: list[str] = Field(default_factory=list)
+    generated_artifact_ids: list[str] = Field(default_factory=list)
+    generated_run_ids: list[str] = Field(default_factory=list)
+    execution_notes: list[str] = Field(default_factory=list)
+    report_artifact_id: str | None = None
+    report_artifact_path: str | None = None
+
+
+class LLMAutopilotStatus(BaseModel):
+    enabled: bool = False
+    thread_running: bool = False
+    interval_seconds: int = 1800
+    max_tasks: int = 3
+    apply: bool = True
+    last_run_at: str | None = None
+    last_success_at: str | None = None
+    last_error: str = ""
+    last_summary: str = ""
+    last_applied_task_ids: list[str] = Field(default_factory=list)
+    last_executed_task_ids: list[str] = Field(default_factory=list)
+    last_generated_artifact_ids: list[str] = Field(default_factory=list)
+    last_generated_run_ids: list[str] = Field(default_factory=list)
+    last_recommended_direction_slug: str = ""
+    last_report_artifact_id: str | None = None
+    last_report_artifact_path: str | None = None
+    cycle_count: int = 0
+
+
 class Artifact(BaseModel):
     id: str
     kind: ArtifactKind
@@ -253,12 +344,32 @@ class RedditFeedPost(BaseModel):
     excerpt: str = ""
 
 
+class RedditTrackedAction(BaseModel):
+    id: str
+    label: str
+
+
+class RedditTrackedComment(BaseModel):
+    id: str
+    author: str
+    permalink: str
+    created_at: str
+    score: int = 0
+    signal: str = "watch"
+    title: str = ""
+    body: str = ""
+    takeaway: str = ""
+    implemented_note: str = ""
+    implemented_items: list[RedditTrackedAction] = Field(default_factory=list)
+
+
 class RedditFeed(BaseModel):
     subreddit: str
     sort: str
     fetched_at: str
     review_candidate_count: int = 0
     posts: list[RedditFeedPost] = Field(default_factory=list)
+    tracked_comments: list[RedditTrackedComment] = Field(default_factory=list)
 
 
 class DashboardSummary(BaseModel):
@@ -275,6 +386,13 @@ class DashboardSummary(BaseModel):
     source_count: int = 0
     flagged_source_count: int = 0
     latest_write_at: str | None = None
+
+
+class ComputeProfile(BaseModel):
+    system_percent: int = 100
+    cpu_percent: int = 100
+    gpu_percent: int = 100
+    updated_at: str | None = None
 
 
 class DirectionReview(BaseModel):
@@ -296,3 +414,27 @@ class ModularProbeResult(BaseModel):
     first_counterexample: int | None = None
     counterexamples: list[int] = Field(default_factory=list)
     rationale: str
+
+
+class HypothesisStatus(StrEnum):
+    PROPOSED = "proposed"
+    TESTING = "testing"
+    PLAUSIBLE = "plausible"
+    FALSIFIED = "falsified"
+
+
+class Hypothesis(BaseModel):
+    id: str
+    direction_slug: str = "hypothesis-sandbox"
+    title: str
+    statement: str
+    category: str
+    status: HypothesisStatus = HypothesisStatus.PROPOSED
+    test_methodology: str = ""
+    test_range: str = ""
+    evidence: list[dict[str, Any]] = Field(default_factory=list)
+    falsification: str = ""
+    notes: str = ""
+    linked_run_ids: list[str] = Field(default_factory=list)
+    created_at: str
+    updated_at: str

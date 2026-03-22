@@ -118,6 +118,29 @@ CREATE TABLE IF NOT EXISTS sources (
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS source_reviews (
+  id TEXT PRIMARY KEY,
+  source_id TEXT NOT NULL REFERENCES sources(id),
+  reviewer TEXT NOT NULL,
+  mode TEXT NOT NULL,
+  review_status TEXT,
+  map_variant TEXT,
+  summary TEXT NOT NULL DEFAULT '',
+  notes TEXT NOT NULL DEFAULT '',
+  fallacy_tags_json TEXT NOT NULL DEFAULT '[]',
+  rubric_json TEXT NOT NULL DEFAULT '{}',
+  llm_provider TEXT NOT NULL DEFAULT '',
+  llm_model TEXT NOT NULL DEFAULT '',
+  extra_json TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS runtime_settings (
+  key TEXT PRIMARY KEY,
+  value_json TEXT NOT NULL DEFAULT '{}',
+  updated_at TEXT NOT NULL
+);
 """
 
 

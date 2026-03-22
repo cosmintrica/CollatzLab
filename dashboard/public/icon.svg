@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" fill="none">
+  <defs>
+    <linearGradient id="bg" x1="64" y1="56" x2="432" y2="456" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFF8EE"/>
+      <stop offset="1" stop-color="#EBD9BA"/>
+    </linearGradient>
+    <linearGradient id="panel" x1="108" y1="118" x2="398" y2="404" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFFDF9"/>
+      <stop offset="1" stop-color="#F5E9D3"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="146" y1="128" x2="336" y2="334" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#D78631"/>
+      <stop offset="1" stop-color="#8A4611"/>
+    </linearGradient>
+    <filter id="glow" x="96" y="96" width="320" height="320" filterUnits="userSpaceOnUse">
+      <feGaussianBlur stdDeviation="18"/>
+    </filter>
+  </defs>
+
+  <rect width="512" height="512" rx="128" fill="url(#bg)"/>
+  <rect x="12" y="12" width="488" height="488" rx="116" stroke="#D5B480" stroke-width="24" stroke-opacity=".72"/>
+
+  <path d="M96 112H416M96 176H416M96 240H416M96 304H416M96 368H416M96 432H416M112 96V416M176 96V416M240 96V416M304 96V416M368 96V416M432 96V416" stroke="#B98C4C" stroke-opacity=".11" stroke-width="8"/>
+
+  <g filter="url(#glow)" opacity=".16">
+    <circle cx="256" cy="264" r="108" fill="#D07E2A"/>
+  </g>
+
+  <rect x="110" y="110" width="292" height="292" rx="72" fill="url(#panel)" stroke="#D7B178" stroke-width="10"/>
+
+  <rect x="152" y="144" width="58" height="58" rx="18" fill="url(#accent)"/>
+  <rect x="224" y="144" width="58" height="58" rx="18" fill="#FFF9F0" stroke="#D6B078" stroke-width="5"/>
+  <rect x="152" y="216" width="58" height="58" rx="18" fill="#FFF9F0" stroke="#D6B078" stroke-width="5"/>
+  <rect x="152" y="288" width="58" height="58" rx="18" fill="#FFF9F0" stroke="#D6B078" stroke-width="5"/>
+  <rect x="224" y="288" width="58" height="58" rx="18" fill="#FFF9F0" stroke="#D6B078" stroke-width="5"/>
+
+  <path d="M318 176H352C374.091 176 392 193.909 392 216V274C392 296.091 374.091 314 352 314H318" stroke="#8A4611" stroke-width="18" stroke-linecap="round"/>
+  <circle cx="294" cy="245" r="21" fill="#D78631"/>
+
+  <rect x="120" y="386" width="272" height="32" rx="16" fill="#F5E6CB" stroke="#D8B57F" stroke-width="4"/>
+  <path d="M162 402H352" stroke="#A5611E" stroke-width="4" stroke-linecap="round" stroke-dasharray="1 14"/>
+</svg>

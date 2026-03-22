@@ -15,17 +15,27 @@ const endpoints = {
   artifactContent: (artifactId) => `${apiBase}/api/artifacts/${artifactId}/content`,
   artifactDownload: (artifactId) => `${apiBase}/api/artifacts/${artifactId}/download`,
   consensusBaseline: `${apiBase}/api/consensus-baseline`,
+  computeProfile: `${apiBase}/api/compute/profile`,
+  llmStatus: `${apiBase}/api/llm/status`,
+  llmSetup: `${apiBase}/api/llm/setup`,
+  llmAutopilotStatus: `${apiBase}/api/llm/autopilot/status`,
+  llmAutopilotConfig: `${apiBase}/api/llm/autopilot/config`,
+  llmAutopilot: `${apiBase}/api/llm/autopilot/run`,
   redditFeed: `${apiBase}/api/external/reddit/collatz?limit=10`,
   fallacyTags: `${apiBase}/api/review/fallacy-tags`,
+  sourceReviews: (sourceId) => `${apiBase}/api/sources/${sourceId}/reviews`,
+  sourceReviewDraft: (sourceId) => `${apiBase}/api/sources/${sourceId}/review-draft`,
   modularProbe: `${apiBase}/api/review/probes/modular`,
   hardware: `${apiBase}/api/workers/capabilities`,
-  workers: `${apiBase}/api/workers`
+  workers: `${apiBase}/api/workers`,
+  sourceDelete: (sourceId) => `${apiBase}/api/sources/${sourceId}`
 };
 
 const tabs = [
   { id: "overview", label: "Start Here" },
   { id: "live-math", label: "Live Math" },
   { id: "directions", label: "Tracks" },
+  { id: "community", label: "Community" },
   { id: "evidence", label: "Evidence" },
   { id: "queue", label: "Operations" },
   { id: "guide", label: "Guide" }
@@ -40,7 +50,8 @@ const liveMathSections = [
 const defaultDirectionOptions = [
   { slug: "verification", title: "Verification" },
   { slug: "inverse-tree-parity", title: "Inverse Tree Parity" },
-  { slug: "lemma-workspace", title: "Lemma Workspace" }
+  { slug: "lemma-workspace", title: "Lemma Workspace" },
+  { slug: "two-adic-v2", title: "2-adic / v2 Explorer" }
 ];
 
 const sourceTypeOptions = [
@@ -67,6 +78,13 @@ const sourceClaimTypeOptions = [
 const sourceStatusOptions = ["intake", "under_review", "flagged", "supported", "refuted", "context"];
 
 const mapVariantOptions = ["unspecified", "standard", "shortcut", "odd_only", "inverse_tree"];
+const llmModelSuggestions = [
+  "gemini-2.5-flash",
+  "gemini-2.5-flash-lite",
+  "gemini-flash-latest",
+  "gemini-2.5-pro",
+  "gemini-3-flash-preview"
+];
 
 const rubricFieldOptions = [
   { key: "peer_reviewed", label: "Peer reviewed" },
@@ -134,19 +152,29 @@ const directionGuide = {
     label: "Evidence track",
     role: "Runs CPU/GPU sweeps, compares kernels, and falsifies weak heuristics.",
     success: "Finds reproducible evidence or real search-space reduction.",
-    caution: "This is not the proof track by itself."
+    caution: "This is not the proof track by itself.",
+    evidence: "run-heavy lane"
   },
   "inverse-tree-parity": {
     label: "Structure track",
     role: "Explores odd predecessors, parity vectors, and modular filters.",
     success: "Finds structural constraints that survive wider testing.",
-    caution: "Reverse-tree intuition still needs a forward implication."
+    caution: "Reverse-tree intuition still needs a forward implication.",
+    evidence: "artifact-heavy lane"
   },
   "lemma-workspace": {
     label: "Proof track",
     role: "Tracks lemmas, dependencies, counterexamples, and source review.",
     success: "Promotes exact claims toward formalization with linked evidence.",
-    caution: "Claims stay provisional until evidence and review agree."
+    caution: "Claims stay provisional until evidence and review agree.",
+    evidence: "claim-heavy lane"
+  },
+  "two-adic-v2": {
+    label: "2-adic track",
+    role: "Studies v2(3n+1), odd-only compression, and 2-adic residue structure.",
+    success: "Finds stable odd-step or valuation regularities that survive extension.",
+    caution: "2-adic patterns are signals, not proofs, until they produce a falsifiable next step.",
+    evidence: "odd-step structural lane"
   }
 };
 
@@ -183,6 +211,9 @@ const initialState = {
   sources: [],
   artifacts: [],
   baseline: null,
+  computeProfile: null,
+  llmStatus: null,
+  autopilotStatus: null,
   redditFeed: null,
   fallacyTags: [],
   hardware: [],
@@ -229,6 +260,21 @@ async function postJson(url, payload) {
       message = body.detail ?? body.message ?? message;
     } catch {
       // Ignore JSON parse failures and fall back to the generic message.
+    }
+    throw new Error(message);
+  }
+  return response.json();
+}
+
+async function deleteJson(url) {
+  const response = await fetch(url, { method: "DELETE" });
+  if (!response.ok) {
+    let message = `Request failed for ${url}`;
+    try {
+      const body = await response.json();
+      message = body.detail ?? body.message ?? message;
+    } catch {
+      // Ignore JSON parse failures.
     }
     throw new Error(message);
   }
@@ -295,7 +341,7 @@ function asList(payload, keys) {
 }
 
 function prettyLabel(value) {
-  return String(value).replaceAll("-", " ");
+  return String(value).replaceAll("-", " ").replaceAll("_", " ");
 }
 
 function normalize(value) {
@@ -375,6 +421,160 @@ function parseCsvList(value) {
     .filter(Boolean);
 }
 
+function runRangeSize(run) {
+  if (!run) {
+    return 0;
+  }
+  return Math.max(0, (Number(run.range_end) || 0) - (Number(run.range_start) || 0) + 1);
+}
+
+function approximatePowerOfTwo(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric) || numeric <= 0) {
+    return "";
+  }
+  return `~2^${Math.log2(numeric).toFixed(2)}`;
+}
+
+function powerGapToMilestone(value, milestoneExponent = 71) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric) || numeric <= 0) {
+    return "";
+  }
+  const gap = milestoneExponent - Math.log2(numeric);
+  return gap >= 0
+    ? `${gap.toFixed(2)} below 2^${milestoneExponent}`
+    : `${Math.abs(gap).toFixed(2)} above 2^${milestoneExponent}`;
+}
+
+function runRangeMagnitude(run) {
+  if (!run) {
+    return "";
+  }
+  const startLabel = approximatePowerOfTwo(run.range_start);
+  const endLabel = approximatePowerOfTwo(run.range_end);
+  if (!startLabel || !endLabel) {
+    return "";
+  }
+  return `${startLabel} -> ${endLabel}`;
+}
+
+function runMilestoneLabel(run) {
+  if (!run) {
+    return "";
+  }
+  const topValue = Math.max(
+    Number(run.range_end) || 0,
+    Number(run.checkpoint?.last_processed) || 0,
+    Number(run.metrics?.last_processed) || 0
+  );
+  if (topValue <= 0) {
+    return "";
+  }
+  const powerLabel = approximatePowerOfTwo(topValue);
+  const gapLabel = powerGapToMilestone(topValue, 71);
+  return `${powerLabel} | ${gapLabel}`;
+}
+
+function extractFailureReason(summary) {
+  const text = String(summary || "").trim();
+  if (!text) {
+    return "";
+  }
+  const marker = text.toLowerCase().indexOf(" failed: ");
+  if (marker >= 0) {
+    return text.slice(marker + 9).trim();
+  }
+  return text;
+}
+
+function describeRunPurpose(run) {
+  if (!run) {
+    return "No run selected.";
+  }
+  const text = `${run.name || ""} ${run.summary || ""}`.toLowerCase();
+  if ((run.name || "").startsWith("recover-prefix-")) {
+    return "Recovered exact prefix preserved from a run that hit the signed-64-bit frontier.";
+  }
+  if ((run.name || "").startsWith("recover-tail-")) {
+    return "Exact overflow-safe CPU recovery for the uncovered tail after a signed-64-bit frontier failure.";
+  }
+  if (run.direction_slug === "verification") {
+    if (text.includes("continuous") && run.hardware === "gpu") {
+      return "Continuous GPU verification stream for large-interval record search, verification throughput, and fresh live checkpoints.";
+    }
+    if (text.includes("continuous") && run.hardware === "cpu") {
+      return "Continuous CPU verification stream for bounded interval evidence, replay coverage, and record tracking.";
+    }
+    if (run.status === "validated") {
+      return "Bounded verification run that already passed an independent replay.";
+    }
+    return "Verification sweep used for record tracking, replay, and later validation.";
+  }
+  if (run.direction_slug === "inverse-tree-parity") {
+    return "Structure-facing run used to test parity or residue ideas against actual intervals.";
+  }
+  if (run.direction_slug === "two-adic-v2") {
+    return "2-adic / odd-step probe used to study v2(3n+1) and compressed odd dynamics.";
+  }
+  if (run.direction_slug === "lemma-workspace") {
+    return "Claim-supporting run linked back into the proof-facing workspace.";
+  }
+  return "General Collatz compute record.";
+}
+
+function describeRunStatusDetail(run) {
+  if (!run) {
+    return "";
+  }
+  if (run.status === "failed") {
+    return extractFailureReason(run.summary);
+  }
+  if ((run.name || "").startsWith("recover-tail-")) {
+    return "Exact CPU fallback is slower here because it avoids the signed-64-bit overflow frontier.";
+  }
+  return "";
+}
+
+function parseClaimNotes(notes) {
+  const raw = String(notes || "").trim();
+  if (!raw) {
+    return { snapshot: null, history: [], raw: "" };
+  }
+
+  const managedMatch = raw.match(/<!-- auto-consolidation:start -->([\s\S]*?)<!-- auto-consolidation:end -->/);
+  const managedText = managedMatch?.[1]?.trim() || "";
+  const readManagedValue = (label) => {
+    const pattern = new RegExp(`- ${label}: ([^\\n]+)`);
+    return managedText.match(pattern)?.[1]?.trim() || "";
+  };
+  const runCoverage = readManagedValue("Run coverage");
+  const snapshot = managedText
+    ? {
+        updatedAt: readManagedValue("Last updated at"),
+        sourceTask: readManagedValue("Last source task"),
+        entryCount: readManagedValue("Consolidated record entries"),
+        uniqueSeeds: readManagedValue("Unique record seeds"),
+        linkedRuns: readManagedValue("Supporting runs currently linked"),
+        runCoveragePreview: runCoverage
+          ? runCoverage.split(",").map((item) => item.trim()).filter(Boolean).slice(0, 8)
+          : []
+      }
+    : null;
+
+  const history = [...raw.matchAll(
+    /## Task execution update ([^\n]+)\s+[\s\S]*?- Source task: ([^\n]+)\s+[\s\S]*?- Consolidated record entries: ([^\n]+)\s+[\s\S]*?- Unique record seeds: ([^\n]+)\s+[\s\S]*?- Supporting runs linked in this pass: ([^\n]+)/g
+  )].map((match) => ({
+    updatedAt: match[1].trim(),
+    sourceTask: match[2].trim(),
+    entryCount: match[3].trim(),
+    uniqueSeeds: match[4].trim(),
+    linkedRuns: match[5].trim()
+  }));
+
+  return { snapshot, history, raw };
+}
+
 function appendCsvTag(value, tag) {
   const next = parseCsvList(value);
   if (!next.includes(tag)) {
@@ -409,6 +609,18 @@ function countBy(items, getKey) {
     accumulator[key] = (accumulator[key] || 0) + 1;
     return accumulator;
   }, {});
+}
+
+function taskIntent(task) {
+  const text = `${task?.title || ""} ${task?.description || ""}`.toLowerCase();
+  if (
+    task?.kind === "experiment" ||
+    task?.direction_slug === "verification" ||
+    ["sweep", "queue", "run", "kernel", "checkpoint"].some((keyword) => text.includes(keyword))
+  ) {
+    return "compute";
+  }
+  return "theory";
 }
 
 function StatusPill({ value }) {
@@ -479,7 +691,7 @@ function buildTickerEquations(orbit) {
   return equations;
 }
 
-function MathTicker({ run, orbit, frameIndex }) {
+function MathTicker({ run, orbit, frameIndex, isActive }) {
   const wrapRef = useRef(null);
   const trackRef = useRef(null);
   const segmentRef = useRef(null);
@@ -492,16 +704,20 @@ function MathTicker({ run, orbit, frameIndex }) {
   const [segmentCopies, setSegmentCopies] = useState(4);
   const [displayedEquations, setDisplayedEquations] = useState(() => buildTickerEquations(orbit));
   const orbitSignature = orbit.length > 0 ? orbit.map((item) => item.value).join("|") : "idle";
-  const speed = displayedEquations.length < 8 ? 22 : displayedEquations.length < 16 ? 32 : 42;
+  const pixelsPerSecond = displayedEquations.length < 8 ? 14 : displayedEquations.length < 16 ? 18 : 24;
 
   useEffect(() => {
     const nextEquations = buildTickerEquations(orbit);
+    const nextIsIdle = nextEquations.every((equation) => equation.idle);
     if (displayedSignatureRef.current === "") {
       displayedSignatureRef.current = orbitSignature;
       setDisplayedEquations(nextEquations);
       return;
     }
     if (displayedSignatureRef.current === orbitSignature) {
+      return;
+    }
+    if (nextIsIdle) {
       return;
     }
     pendingEquationsRef.current = {
@@ -526,7 +742,7 @@ function MathTicker({ run, orbit, frameIndex }) {
       }
       segmentWidthRef.current = width;
       if (width > 0) {
-        const neededCopies = Math.max(4, Math.ceil((wrapWidth || width) / width) + 3);
+        const neededCopies = Math.max(5, Math.ceil((wrapWidth || width) / width) + 4);
         setSegmentCopies((current) => (current === neededCopies ? current : neededCopies));
       }
       if (trackRef.current && width > 0) {
@@ -552,9 +768,13 @@ function MathTicker({ run, orbit, frameIndex }) {
     if (!track) {
       return undefined;
     }
+    if (!isActive) {
+      lastTickRef.current = 0;
+      track.style.transform = `translate3d(${-offsetRef.current}px, 0, 0)`;
+      return undefined;
+    }
 
     let cancelled = false;
-    const pixelsPerSecond = 96;
     lastTickRef.current = 0;
 
     const tick = (timestamp) => {
@@ -589,7 +809,7 @@ function MathTicker({ run, orbit, frameIndex }) {
         window.cancelAnimationFrame(animationRef.current);
       }
     };
-  }, [run?.id, speed]);
+  }, [run?.id, pixelsPerSecond, isActive]);
 
   return (
     <div className="math-ticker-wrap" aria-hidden="true" ref={wrapRef}>
@@ -736,6 +956,29 @@ function FilterBar({ onClear, clearLabel = "Clear filters", children }) {
   );
 }
 
+function SectionSubnav({ items, activeId, onChange, label = "Section views" }) {
+  return (
+    <div className="section-subnav" role="tablist" aria-label={label}>
+      {items.map((item) => (
+        <button
+          key={item.id}
+          type="button"
+          role="tab"
+          aria-selected={activeId === item.id}
+          className={activeId === item.id ? "section-subnav-button active" : "section-subnav-button"}
+          onClick={() => onChange(item.id)}
+        >
+          <span className="section-subnav-top">
+            <span className="section-subnav-label">{item.label}</span>
+            {item.count != null ? <span className="section-subnav-count">{item.count}</span> : null}
+          </span>
+          {item.note ? <span className="section-subnav-note">{item.note}</span> : null}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 function CapabilityCard({ label, value, note }) {
   return (
     <article className="capability-card">
@@ -788,6 +1031,15 @@ function EvidenceDetailPanel({
   onExportText,
 }) {
   const item = selectedRun || selectedClaim || selectedArtifact || null;
+  const [detailVisible, setDetailVisible] = useState({
+    links: 4,
+    runs: 8,
+    claims: 8,
+    artifacts: 8,
+    claimUpdates: 6
+  });
+  const [showRawClaimNotes, setShowRawClaimNotes] = useState(false);
+  const isAutopilotArtifact = Boolean(selectedArtifact?.metadata?.llm_autopilot);
   const typeLabel = selectedRun
     ? selectedRun.status === "validated"
       ? "Validated result"
@@ -803,9 +1055,54 @@ function EvidenceDetailPanel({
     typeLabel === "Validated result"
   );
   const primaryArtifact = selectedArtifact || relatedArtifacts[0] || null;
+  const selectedRunPurpose = selectedRun ? describeRunPurpose(selectedRun) : "";
+  const parsedClaimNotes = selectedClaim ? parseClaimNotes(selectedClaim.notes) : null;
   const validationMeaning = selectedRun?.status === "validated"
     ? `Validated result means this run was replayed through an independent implementation and the aggregate results matched. It does not mean a new Collatz formula was discovered; it means the compute evidence for this interval passed a stronger correctness check.`
     : "";
+  const groupedRelatedLinks = Object.values(
+    relatedLinks.reduce((accumulator, link) => {
+      const key = `${link.claim_id}|${link.relation}`;
+      if (!accumulator[key]) {
+        accumulator[key] = {
+          claim_id: link.claim_id,
+          relation: link.relation,
+          run_ids: []
+        };
+      }
+      if (!accumulator[key].run_ids.includes(link.run_id)) {
+        accumulator[key].run_ids.push(link.run_id);
+      }
+      return accumulator;
+    }, {})
+  )
+    .map((group) => ({
+      ...group,
+      run_ids: [...group.run_ids].sort((left, right) => left.localeCompare(right, undefined, { numeric: true }))
+    }))
+    .sort((left, right) => {
+      if (right.run_ids.length !== left.run_ids.length) {
+        return right.run_ids.length - left.run_ids.length;
+      }
+      return left.claim_id.localeCompare(right.claim_id, undefined, { numeric: true });
+    });
+  const visibleLinkGroups = groupedRelatedLinks.slice(0, detailVisible.links);
+  const visibleRelatedRuns = relatedRuns.slice(0, detailVisible.runs);
+  const visibleRelatedClaims = relatedClaims.slice(0, detailVisible.claims);
+  const visibleRelatedArtifacts = relatedArtifacts.slice(0, detailVisible.artifacts);
+  const visibleClaimUpdates = parsedClaimNotes?.history?.slice(0, detailVisible.claimUpdates) || [];
+  const dependencyPreview = selectedClaim?.dependencies?.slice(0, 8) || [];
+
+  useEffect(() => {
+    setDetailVisible({
+      links: 4,
+      runs: 8,
+      claims: 8,
+      artifacts: 8,
+      claimUpdates: 6
+    });
+    setShowRawClaimNotes(false);
+  }, [item?.id]);
 
   if (!item) {
     return (
@@ -891,6 +1188,7 @@ function EvidenceDetailPanel({
             <div>
               <span className="metric-label">Interval</span>
               <strong>{selectedRun.range_start} to {selectedRun.range_end}</strong>
+              <p className="meta-line">{runRangeMagnitude(selectedRun)} | {runMilestoneLabel(selectedRun)}</p>
             </div>
             <div>
               <span className="metric-label">Kernel</span>
@@ -909,6 +1207,19 @@ function EvidenceDetailPanel({
               <strong>{selectedRun.checkpoint?.last_processed ?? "-"}</strong>
             </div>
           </div>
+          <div className="detail-related-card">
+            <span className="metric-label">Run purpose</span>
+            <strong>{selectedRun.name}</strong>
+            <p>{selectedRunPurpose}</p>
+            <p className="meta-line">
+              range size {runRangeSize(selectedRun).toLocaleString()} | {selectedRun.direction_slug} | {selectedRun.hardware}
+            </p>
+          </div>
+          {selectedRun.status === "failed" ? (
+            <div className="note-block note-block-danger">
+              <p><strong>Failure reason</strong> {extractFailureReason(selectedRun.summary)}</p>
+            </div>
+          ) : null}
           <div className="note-block">
             <p><strong>Max total stopping time</strong> {selectedRun.metrics?.max_total_stopping_time?.n ?? "-"} {"\u2192"} {selectedRun.metrics?.max_total_stopping_time?.value ?? "-"}</p>
             <p><strong>Max stopping time</strong> {selectedRun.metrics?.max_stopping_time?.n ?? "-"} {"\u2192"} {selectedRun.metrics?.max_stopping_time?.value ?? "-"}</p>
@@ -934,10 +1245,102 @@ function EvidenceDetailPanel({
               <strong>{selectedClaim.dependencies?.length || 0}</strong>
             </div>
           </div>
-          <div className="note-block">
-            <p><strong>Dependencies</strong> {selectedClaim.dependencies?.length ? selectedClaim.dependencies.join(", ") : "none"}</p>
-            <p><strong>Notes</strong> {selectedClaim.notes || "No notes stored yet."}</p>
+          <div className="detail-related-card">
+            <span className="metric-label">Dependencies</span>
+            {selectedClaim.dependencies?.length ? (
+              <div className="relation-chip-list claim-chip-list">
+                {dependencyPreview.map((dependencyId) => (
+                  <button
+                    key={dependencyId}
+                    className="relation-chip"
+                    type="button"
+                    onClick={() => onSelectEvidence("run", dependencyId)}
+                  >
+                    {dependencyId}
+                  </button>
+                ))}
+                {selectedClaim.dependencies.length > dependencyPreview.length ? (
+                  <span className="relation-chip relation-chip-muted">+{selectedClaim.dependencies.length - dependencyPreview.length} more</span>
+                ) : null}
+              </div>
+            ) : (
+              <p>No explicit dependencies stored.</p>
+            )}
           </div>
+          {parsedClaimNotes?.snapshot ? (
+            <div className="claim-snapshot-grid">
+              <article className="detail-related-card">
+                <span className="metric-label">Last consolidation</span>
+                <strong>{formatTimestamp(parsedClaimNotes.snapshot.updatedAt)}</strong>
+                <p>{parsedClaimNotes.snapshot.sourceTask || "no source task"}</p>
+              </article>
+              <article className="detail-related-card">
+                <span className="metric-label">Record entries</span>
+                <strong>{parsedClaimNotes.snapshot.entryCount || "0"}</strong>
+                <p>{parsedClaimNotes.snapshot.uniqueSeeds || "0"} unique record seeds</p>
+              </article>
+              <article className="detail-related-card">
+                <span className="metric-label">Linked runs</span>
+                <strong>{parsedClaimNotes.snapshot.linkedRuns || "0"}</strong>
+                <p>supporting runs currently attached</p>
+              </article>
+            </div>
+          ) : null}
+          {parsedClaimNotes?.snapshot?.runCoveragePreview?.length ? (
+            <div className="detail-related-card">
+              <span className="metric-label">Run coverage preview</span>
+              <div className="relation-chip-list claim-chip-list">
+                {parsedClaimNotes.snapshot.runCoveragePreview.map((runId) => (
+                  <button key={runId} className="relation-chip" type="button" onClick={() => onSelectEvidence("run", runId)}>
+                    {runId}
+                  </button>
+                ))}
+              </div>
+            </div>
+          ) : null}
+          {parsedClaimNotes?.history?.length ? (
+            <div className="detail-related-card">
+              <span className="metric-label">Historical auto-updates</span>
+              <div className="claim-update-list">
+                {visibleClaimUpdates.map((update) => (
+                  <article key={`${update.updatedAt}-${update.sourceTask}`} className="claim-update-card">
+                    <strong>{update.sourceTask}</strong>
+                    <p>{formatTimestamp(update.updatedAt)}</p>
+                    <div className="relation-chip-list claim-chip-list">
+                      <span className="relation-chip relation-chip-muted">{update.entryCount} entries</span>
+                      <span className="relation-chip relation-chip-muted">{update.uniqueSeeds} seeds</span>
+                      <span className="relation-chip relation-chip-muted">{update.linkedRuns} linked</span>
+                    </div>
+                  </article>
+                ))}
+              </div>
+              {parsedClaimNotes.history.length > detailVisible.claimUpdates ? (
+                <button
+                  className="secondary-button detail-more-button"
+                  type="button"
+                  onClick={() => setDetailVisible((current) => ({ ...current, claimUpdates: current.claimUpdates + 6 }))}
+                >
+                  Show more updates ({parsedClaimNotes.history.length - detailVisible.claimUpdates} hidden)
+                </button>
+              ) : null}
+            </div>
+          ) : null}
+          <div className="card-action-row">
+            <button className="secondary-button" type="button" onClick={() => setShowRawClaimNotes((current) => !current)}>
+              {showRawClaimNotes ? "Hide raw notes" : "Show raw notes"}
+            </button>
+          </div>
+          {showRawClaimNotes ? (
+            <div className="detail-preview-card">
+              <div className="card-head">
+                <div>
+                  <span className="metric-label">Raw claim notes</span>
+                  <strong>{selectedClaim.id}</strong>
+                </div>
+              </div>
+              <pre className="artifact-preview">{parsedClaimNotes?.raw || "No notes stored yet."}</pre>
+            </div>
+          ) : null}
         </>
       ) : null}
 
@@ -957,8 +1360,37 @@ function EvidenceDetailPanel({
               <span className="metric-label">Claim</span>
               <strong>{selectedArtifact.claim_id || "n/a"}</strong>
             </div>
+            {isAutopilotArtifact ? (
+              <>
+                <div>
+                  <span className="metric-label">Recommended direction</span>
+                  <strong>{selectedArtifact.metadata?.recommended_direction_slug || "n/a"}</strong>
+                </div>
+                <div>
+                  <span className="metric-label">LLM provider</span>
+                  <strong>
+                    {selectedArtifact.metadata?.provider || "llm"} / {selectedArtifact.metadata?.model || "unknown"}
+                  </strong>
+                </div>
+                <div>
+                  <span className="metric-label">Created tasks</span>
+                  <strong>{selectedArtifact.metadata?.applied_task_ids?.length || 0}</strong>
+                </div>
+              </>
+            ) : null}
           </div>
           <p className="checksum">sha256: {selectedArtifact.checksum}</p>
+          {isAutopilotArtifact ? (
+            <div className="note-block">
+              <p><strong>Planning artifact</strong> This Markdown file is a Gemini autopilot planning report. It is not a compute run, not a validated result, and not a proof step by itself.</p>
+              <p><strong>How to read it</strong> It should explain why the next tasks were proposed, which direction looked strongest, and what a human or worker should inspect next.</p>
+              {selectedArtifact.metadata?.applied_task_ids?.length ? (
+                <p><strong>Tasks created from this report</strong> {selectedArtifact.metadata.applied_task_ids.join(", ")}</p>
+              ) : (
+                <p><strong>Tasks created from this report</strong> none. This artifact may be a dry-run plan only.</p>
+              )}
+            </div>
+          ) : null}
         </>
       ) : null}
 
@@ -967,15 +1399,50 @@ function EvidenceDetailPanel({
         {relatedLinks.length === 0 ? (
           <p>No explicit claim-to-run links exist for this record yet.</p>
         ) : (
-          <div className="relation-list">
-            {relatedLinks.map((link) => (
-              <div key={`${link.claim_id}-${link.run_id}-${link.relation}`} className="relation-row">
-                <strong>{link.claim_id}</strong>
-                <span>{prettyLabel(link.relation)}</span>
-                <strong>{link.run_id}</strong>
+          <>
+            <div className="relation-list">
+            {visibleLinkGroups.map((group) => (
+              <div key={`${group.claim_id}-${group.relation}`} className="relation-row relation-group-row">
+                <div className="relation-main">
+                  <strong>{group.claim_id}</strong>
+                  <span>{prettyLabel(group.relation)}</span>
+                  <strong>{group.run_ids.length} runs</strong>
+                </div>
+                <div className="relation-chip-list">
+                  {group.run_ids.slice(0, 6).map((runId) => (
+                    <button
+                      key={runId}
+                      className="relation-chip"
+                      type="button"
+                      onClick={() => onSelectEvidence("run", runId)}
+                    >
+                      {runId}
+                    </button>
+                  ))}
+                  {group.run_ids.length > 6 ? (
+                    <span className="relation-chip relation-chip-muted">+{group.run_ids.length - 6} more</span>
+                  ) : null}
+                </div>
+                <button
+                  className="secondary-button relation-claim-button"
+                  type="button"
+                  onClick={() => onSelectEvidence("claim", group.claim_id)}
+                >
+                  Open claim
+                </button>
               </div>
             ))}
-          </div>
+            </div>
+            {groupedRelatedLinks.length > detailVisible.links ? (
+              <button
+                className="secondary-button detail-more-button"
+                type="button"
+                onClick={() => setDetailVisible((current) => ({ ...current, links: current.links + 4 }))}
+              >
+                Show more link groups ({groupedRelatedLinks.length - detailVisible.links} hidden)
+              </button>
+            ) : null}
+          </>
         )}
       </div>
 
@@ -985,8 +1452,9 @@ function EvidenceDetailPanel({
           {relatedRuns.length === 0 ? (
             <p>No runs linked yet.</p>
           ) : (
-            <div className="detail-link-list">
-              {relatedRuns.map((run) => (
+            <>
+              <div className="detail-link-list">
+              {visibleRelatedRuns.map((run) => (
                 <button
                   key={run.id}
                   className={selectedKind === "run" && selectedRun?.id === run.id ? "detail-link-button active" : "detail-link-button"}
@@ -996,7 +1464,17 @@ function EvidenceDetailPanel({
                   {run.id} | {run.status}
                 </button>
               ))}
-            </div>
+              </div>
+              {relatedRuns.length > detailVisible.runs ? (
+                <button
+                  className="secondary-button detail-more-button"
+                  type="button"
+                  onClick={() => setDetailVisible((current) => ({ ...current, runs: current.runs + 8 }))}
+                >
+                  Show more runs ({relatedRuns.length - detailVisible.runs} hidden)
+                </button>
+              ) : null}
+            </>
           )}
         </div>
         <div className="detail-related-card">
@@ -1004,8 +1482,9 @@ function EvidenceDetailPanel({
           {relatedClaims.length === 0 ? (
             <p>No claims linked yet.</p>
           ) : (
-            <div className="detail-link-list">
-              {relatedClaims.map((claim) => (
+            <>
+              <div className="detail-link-list">
+              {visibleRelatedClaims.map((claim) => (
                 <button
                   key={claim.id}
                   className={selectedKind === "claim" && selectedClaim?.id === claim.id ? "detail-link-button active" : "detail-link-button"}
@@ -1015,7 +1494,17 @@ function EvidenceDetailPanel({
                   {claim.id} | {claim.status}
                 </button>
               ))}
-            </div>
+              </div>
+              {relatedClaims.length > detailVisible.claims ? (
+                <button
+                  className="secondary-button detail-more-button"
+                  type="button"
+                  onClick={() => setDetailVisible((current) => ({ ...current, claims: current.claims + 8 }))}
+                >
+                  Show more claims ({relatedClaims.length - detailVisible.claims} hidden)
+                </button>
+              ) : null}
+            </>
           )}
         </div>
         <div className="detail-related-card">
@@ -1023,8 +1512,9 @@ function EvidenceDetailPanel({
           {relatedArtifacts.length === 0 ? (
             <p>No artifacts linked yet.</p>
           ) : (
-            <div className="detail-link-list">
-              {relatedArtifacts.map((artifact) => (
+            <>
+              <div className="detail-link-list">
+              {visibleRelatedArtifacts.map((artifact) => (
                 <button
                   key={artifact.id}
                   className={selectedKind === "artifact" && selectedArtifact?.id === artifact.id ? "detail-link-button active" : "detail-link-button"}
@@ -1034,7 +1524,17 @@ function EvidenceDetailPanel({
                   {artifact.id} | {artifact.kind}
                 </button>
               ))}
-            </div>
+              </div>
+              {relatedArtifacts.length > detailVisible.artifacts ? (
+                <button
+                  className="secondary-button detail-more-button"
+                  type="button"
+                  onClick={() => setDetailVisible((current) => ({ ...current, artifacts: current.artifacts + 8 }))}
+                >
+                  Show more artifacts ({relatedArtifacts.length - detailVisible.artifacts} hidden)
+                </button>
+              ) : null}
+            </>
           )}
         </div>
       </div>
@@ -1356,7 +1856,7 @@ function OrbitPanel({ run, worker, frameIndex, onSelectRun, runs, expanded = fal
     >
       <SectionIntro
         title="Live mathematical trace"
-        text="This panel takes a real seed from an actual run and rewrites the next Collatz iterates in mathematical language. When a worker is active, the seed comes from the newest checkpoint rather than a mock demo."
+        text="This panel rewrites actual Collatz iterates from a real saved run. If a worker is still active, the seed follows the newest checkpoint; otherwise it replays the latest stored checkpoint for the pinned run."
         action={
           <label className="orbit-run-picker">
             <span className="orbit-selector-label">Pinned run</span>
@@ -1562,6 +2062,9 @@ function RunRail({ runs, selectedRunId, onSelectRun }) {
           {runs.slice(0, 10).map((run) => {
             const progress = runProgress(run);
             const selected = run.id === selectedRunId;
+            const purpose = describeRunPurpose(run);
+            const statusDetail = describeRunStatusDetail(run);
+            const magnitude = runRangeMagnitude(run);
             return (
               <button
                 key={run.id}
@@ -1575,6 +2078,14 @@ function RunRail({ runs, selectedRunId, onSelectRun }) {
                 </div>
                 <span className="run-rail-name">{run.name}</span>
                 <span className="run-rail-meta">{run.kernel} | {run.hardware}</span>
+                <span className="run-rail-purpose">{purpose}</span>
+                {statusDetail ? (
+                  <span className={`run-rail-detail ${run.status === "failed" ? "failure" : ""}`}>{statusDetail}</span>
+                ) : null}
+                {magnitude ? <span className="run-rail-range power">{magnitude}</span> : null}
+                <span className="run-rail-range">
+                  {run.range_start.toLocaleString()} → {run.range_end.toLocaleString()}
+                </span>
                 <div className="run-rail-progress">
                   <div className="run-rail-bar">
                     <div className="run-rail-fill" style={{ width: `${progress.percent}%` }} />
@@ -1595,7 +2106,7 @@ function RedditIntelRail({ feed, onImportPost, pendingKey }) {
   const fetchedAt = feed?.fetched_at ? formatTimestamp(feed.fetched_at) : "not fetched yet";
 
   return (
-    <aside className="workspace-rail">
+    <aside className="workspace-rail workspace-rail-right">
       <article className="panel reddit-rail-card">
         <div className="card-head">
           <div>
@@ -1638,7 +2149,7 @@ function RedditIntelRail({ feed, onImportPost, pendingKey }) {
                   <span className="meta-line">{formatRelativeTime(post.created_at)}</span>
                 </div>
                 <strong>{post.title}</strong>
-                <p>{post.excerpt}</p>
+                <p className="reddit-post-excerpt">{post.excerpt}</p>
                 <div className="reddit-post-meta">
                   <span>u/{post.author}</span>
                   <span>{post.score} score</span>
@@ -1666,20 +2177,89 @@ function RedditIntelRail({ feed, onImportPost, pendingKey }) {
   );
 }
 
+function ComputeBudgetRail({
+  computeProfile,
+  quickForms,
+  updateQuickForm,
+  handleSubmit,
+  actionState,
+  effectiveCpuBudget,
+  effectiveGpuBudget
+}) {
+  return (
+    <aside className="workspace-rail workspace-rail-left">
+      <form className="compute-control-panel compute-control-panel-docked" onSubmit={handleSubmit}>
+        <div className="compute-control-header">
+          <span className="sidebar-kicker">Compute budget</span>
+          <strong>{computeProfile.system_percent}% system</strong>
+        </div>
+        <label className="compute-slider-row">
+          <span>Whole system</span>
+          <strong>{quickForms.computeSystemPercent}%</strong>
+          <input
+            type="range"
+            min="0"
+            max="100"
+            step="5"
+            value={quickForms.computeSystemPercent}
+            onChange={(event) => updateQuickForm("computeSystemPercent", event.target.value)}
+          />
+        </label>
+        <label className="compute-slider-row">
+          <span>CPU lane</span>
+          <strong>{quickForms.computeCpuPercent}%</strong>
+          <input
+            type="range"
+            min="0"
+            max="100"
+            step="5"
+            value={quickForms.computeCpuPercent}
+            onChange={(event) => updateQuickForm("computeCpuPercent", event.target.value)}
+          />
+        </label>
+        <label className="compute-slider-row">
+          <span>GPU lane</span>
+          <strong>{quickForms.computeGpuPercent}%</strong>
+          <input
+            type="range"
+            min="0"
+            max="100"
+            step="5"
+            value={quickForms.computeGpuPercent}
+            onChange={(event) => updateQuickForm("computeGpuPercent", event.target.value)}
+          />
+        </label>
+        <p className="sidebar-note compute-budget-note">
+          Effective now: CPU {effectiveCpuBudget}% • GPU {effectiveGpuBudget}%.
+        </p>
+        <button className="secondary-button" type="submit" disabled={actionState.pendingKey === "compute profile"}>
+          {actionState.pendingKey === "compute profile" ? "Saving..." : "Apply budget"}
+        </button>
+      </form>
+    </aside>
+  );
+}
+
 export default function App() {
   const [activeTab, setActiveTab] = useState("overview");
+  const [evidenceView, setEvidenceView] = useState("overview");
+  const [operationsView, setOperationsView] = useState("compute");
+  const [tracksView, setTracksView] = useState("overview");
+  const [guideView, setGuideView] = useState("start");
   const [refreshNonce, setRefreshNonce] = useState(0);
   const [selectedEvidence, setSelectedEvidence] = useState({ kind: "", id: "" });
   const [artifactPreviews, setArtifactPreviews] = useState({});
   const [previewArtifactId, setPreviewArtifactId] = useState("");
   const [visible, setVisible] = useState({
-    directions: 3,
+    directions: 10,
     ledger: 8,
     runs: 6,
     claims: 4,
     sources: 4,
     artifacts: 4,
-    tasks: 6
+    tasks: 6,
+    computeTasks: 6,
+    theoryTasks: 6
   });
   const [filters, setFilters] = useState({
     runQuery: "",
@@ -1723,6 +2303,7 @@ export default function App() {
     sourceReviewId: "",
     sourceReviewStatus: "under_review",
     sourceReviewMapVariant: "unspecified",
+    sourceReviewSummary: "",
     sourceReviewTags: "",
     sourceReviewNotes: "",
     sourceReviewPeerReviewed: "unknown",
@@ -1733,6 +2314,13 @@ export default function App() {
     sourceReviewProvesCycleExclusion: "unknown",
     sourceReviewUsesStatisticalArgument: "unknown",
     sourceReviewValidationBacked: "unknown",
+    llmSetupApiKey: "",
+    llmSetupModel: "gemini-2.5-flash",
+    computeSystemPercent: "100",
+    computeCpuPercent: "100",
+    computeGpuPercent: "100",
+    autopilotMaxTasks: "2",
+    autopilotInterval: "7200",
     probeModulus: "8",
     probeResidues: "5",
     probeLimit: "255"
@@ -1744,6 +2332,9 @@ export default function App() {
   });
   const [reviewResult, setReviewResult] = useState(null);
   const [sourceReviewResult, setSourceReviewResult] = useState(null);
+  const [sourceReviewHistory, setSourceReviewHistory] = useState([]);
+  const [llmDraft, setLlmDraft] = useState(null);
+  const [autopilotResult, setAutopilotResult] = useState(null);
   const [probeResult, setProbeResult] = useState(null);
   const [navOpen, setNavOpen] = useState(false);
   const [orbitRunId, setOrbitRunId] = useState("");
@@ -1758,7 +2349,7 @@ export default function App() {
 
     async function load() {
       try {
-        const [summary, directions, tasks, runs, claims, claimRunLinks, sources, artifacts, baseline, redditFeed, fallacyTags, hardware, workers] = await Promise.all([
+        const [summary, directions, tasks, runs, claims, claimRunLinks, sources, artifacts, baseline, computeProfile, llmStatus, autopilotStatus, redditFeed, fallacyTags, hardware, workers] = await Promise.all([
           readJson(endpoints.summary),
           readJson(endpoints.directions),
           readJson(endpoints.tasks),
@@ -1768,6 +2359,9 @@ export default function App() {
           readJson(endpoints.sources),
           readJson(endpoints.artifacts),
           readOptionalJson(endpoints.consensusBaseline),
+          readOptionalJson(endpoints.computeProfile),
+          readOptionalJson(endpoints.llmStatus),
+          readOptionalJson(endpoints.llmAutopilotStatus),
           readOptionalJson(endpoints.redditFeed),
           readOptionalJson(endpoints.fallacyTags),
           readOptionalJson(endpoints.hardware),
@@ -1787,6 +2381,9 @@ export default function App() {
             sources,
             artifacts,
             baseline,
+            computeProfile,
+            llmStatus,
+            autopilotStatus,
             redditFeed,
             fallacyTags: asList(fallacyTags, ["items", "tags", "catalog"]),
             hardware: asList(hardware, ["items", "hardware", "inventory"]),
@@ -1817,6 +2414,28 @@ export default function App() {
       window.clearInterval(timer);
     };
   }, [pollIntervalMs, refreshNonce]);
+
+  useEffect(() => {
+    let active = true;
+    if (!quickForms.sourceReviewId) {
+      setSourceReviewHistory([]);
+      setLlmDraft(null);
+      return () => {
+        active = false;
+      };
+    }
+
+    readOptionalJson(endpoints.sourceReviews(quickForms.sourceReviewId)).then((payload) => {
+      if (!active) {
+        return;
+      }
+      setSourceReviewHistory(Array.isArray(payload) ? payload : []);
+    });
+
+    return () => {
+      active = false;
+    };
+  }, [quickForms.sourceReviewId, refreshNonce]);
 
   useEffect(() => {
     if (typeof window.PressureObserver === "undefined") return;
@@ -1850,7 +2469,33 @@ export default function App() {
     const status = normalize(worker.status || worker.state || worker.mode);
     return ["running", "active", "online", "idle", "busy"].includes(status) || status === "";
   });
+  const computeProfile = state.computeProfile || { system_percent: 100, cpu_percent: 100, gpu_percent: 100 };
+  const effectiveCpuBudget = Math.round(((computeProfile.system_percent ?? 100) * (computeProfile.cpu_percent ?? 100)) / 100);
+  const effectiveGpuBudget = Math.round(((computeProfile.system_percent ?? 100) * (computeProfile.gpu_percent ?? 100)) / 100);
   const visibleDirections = state.directions.slice(0, visible.directions);
+  const directionStats = Object.fromEntries(
+    state.directions.map((direction) => {
+      const directionRuns = state.runs.filter((run) => run.direction_slug === direction.slug);
+      const claims = state.claims.filter((claim) => claim.direction_slug === direction.slug).length;
+      const openTasks = state.tasks.filter((task) => task.direction_slug === direction.slug && task.status !== "done");
+      const computeTasks = openTasks.filter((task) => taskIntent(task) === "compute").length;
+      const theoryTasks = openTasks.length - computeTasks;
+      const activeRuns = directionRuns.filter((run) => run.status === "queued" || run.status === "running").length;
+      const validatedRuns = directionRuns.filter((run) => run.status === "validated").length;
+      return [
+        direction.slug,
+        {
+          runs: directionRuns.length,
+          claims,
+          tasks: openTasks.length,
+          computeTasks,
+          theoryTasks,
+          activeRuns,
+          validatedRuns
+        }
+      ];
+    })
+  );
   const filteredRuns = state.runs.filter((run) => {
     const query = deferredFilters.runQuery;
     const matchesStatus =
@@ -1940,15 +2585,35 @@ export default function App() {
       )
     );
   });
+  const latestRunId = state.runs[0]?.id || "none";
+  const computeBacklogTasks = filteredTasks.filter((task) => taskIntent(task) === "compute");
+  const theoryBacklogTasks = filteredTasks.filter((task) => taskIntent(task) === "theory");
+  const groupedTasksByDirection = state.directions.map((direction) => ({
+    direction,
+    tasks: filteredTasks.filter((task) => task.direction_slug === direction.slug)
+  }));
+  const groupedComputeTasksByDirection = state.directions.map((direction) => ({
+    direction,
+    tasks: computeBacklogTasks.filter((task) => task.direction_slug === direction.slug)
+  }));
+  const groupedTheoryTasksByDirection = state.directions.map((direction) => ({
+    direction,
+    tasks: theoryBacklogTasks.filter((task) => task.direction_slug === direction.slug)
+  }));
   const visibleRuns = filteredRuns.slice(0, visible.runs);
   const visibleClaims = filteredClaims.slice(0, visible.claims);
   const visibleSources = filteredSources.slice(0, visible.sources);
   const visibleArtifacts = filteredArtifacts.slice(0, visible.artifacts);
   const visibleTasks = filteredTasks.slice(0, visible.tasks);
+  const visibleComputeTasks = computeBacklogTasks.slice(0, visible.computeTasks);
+  const visibleTheoryTasks = theoryBacklogTasks.slice(0, visible.theoryTasks);
   const validatedRuns = filteredRuns.filter((run) => run.status === "validated");
   const fallacyCatalog = state.fallacyTags.length > 0 ? state.fallacyTags : defaultFallacyCatalog;
   const selectedReviewSource = state.sources.find((source) => source.id === quickForms.sourceReviewId) || null;
   const selectedOrbitRun = state.runs.find((run) => run.id === orbitRunId) || null;
+  const tickerRun = runningRunOptions[0] || null;
+  const tickerSourceRun = tickerRun || selectedOrbitRun || state.runs[0] || null;
+  const tickerOrbitFrames = tickerSourceRun ? buildOrbit(orbitSeedFromRun(tickerSourceRun), 16) : [];
   const selectedOrbitWorker =
     state.workers.find((worker) => worker.current_run_id === selectedOrbitRun?.id) ||
     state.workers.find((worker) => normalize(worker.status) === "running") ||
@@ -2101,7 +2766,13 @@ export default function App() {
       direction: artifact.claim_id || artifact.run_id || "artifact",
       summary: artifact.path,
       timestamp: latestTimestamp(artifact.created_at),
-      meta: artifact.run_id ? `run ${artifact.run_id}` : artifact.claim_id ? `claim ${artifact.claim_id}` : "unlinked file",
+      meta: artifact.run_id
+        ? `run ${artifact.run_id}`
+        : artifact.claim_id
+          ? `claim ${artifact.claim_id}`
+          : artifact.metadata?.llm_autopilot
+            ? "Gemini planning report"
+            : "standalone artifact",
       openKind: "artifact"
     }))
   ].sort((left, right) => timestampValue(right.timestamp) - timestampValue(left.timestamp));
@@ -2112,6 +2783,11 @@ export default function App() {
   ).length;
   const flaggedSources = state.sources.filter((source) => source.review_status === "flagged").length;
   const reviewedSources = state.sources.filter((source) => source.review_status !== "intake").length;
+  const trackedComments = Array.isArray(state.redditFeed?.tracked_comments) ? state.redditFeed.tracked_comments : [];
+  const communityActionCount = trackedComments.reduce(
+    (total, comment) => total + (Array.isArray(comment.implemented_items) ? comment.implemented_items.length : 0),
+    0
+  );
   const hasLoaded = !state.loading && state.summary !== null;
   const summary = state.summary;
   const activeTabLabel = tabs.find((tab) => tab.id === activeTab)?.label ?? "Dashboard";
@@ -2138,12 +2814,63 @@ export default function App() {
       state.sources.length > 0 ||
       state.tasks.length > 0 ||
       state.artifacts.length > 0);
+  const evidenceViews = [
+    { id: "overview", label: "Overview", count: evidenceLedger.length, note: "Map the whole evidence space first." },
+    { id: "inspector", label: "Inspector", count: selectedEvidence.id ? 1 : 0, note: "Read one record deeply and follow its links." },
+    { id: "validated", label: "Validated", count: validatedRuns.length, note: "High-trust compute records." },
+    { id: "claims", label: "Claims", count: filteredClaims.length, note: "Theory statements and dependencies." },
+    { id: "artifacts", label: "Artifacts", count: filteredArtifacts.length, note: "Reports, JSON, notes, and previews." },
+    { id: "sources", label: "Sources", count: filteredSources.length, note: "External proof attempts and reviews." },
+    { id: "runs", label: "Runs", count: filteredRuns.length, note: "All compute runs, raw and validated." }
+  ];
+  const operationsViews = [
+    { id: "compute", label: "Compute", count: queuedRuns + runningRuns, note: `${queuedRuns} queued, ${runningRuns} live.` },
+    { id: "theory", label: "Theory", count: state.claims.length, note: "Claims, links, and research statements." },
+    { id: "sources", label: "Sources", count: state.sources.length, note: "Register and review external material." },
+    { id: "checks", label: "Checks", count: flaggedSources, note: "Direction review and modular falsification." },
+    { id: "backlog", label: "Backlog", count: filteredTasks.length, note: "Tasks and next human-scale actions." }
+  ];
+  const tracksViews = [
+    { id: "overview", label: "Overview", count: state.directions.length, note: "See each lane and its current load." },
+    { id: "directions", label: "Directions", count: state.directions.length, note: "Read the lanes in detail." },
+    { id: "backlog", label: "Task split", count: filteredTasks.length, note: "Separate compute backlog from theory backlog." }
+  ];
+  const guideViews = [
+    { id: "start", label: "Start", note: "What the app is and how to read it." },
+    { id: "roles", label: "Roles", note: "Compute, theory, validation, integration." },
+    { id: "validation", label: "Validation", note: "What counts as evidence and what does not." },
+    { id: "llm", label: "LLM", note: "How Gemini is used safely here." }
+  ];
+  const operationsViewMeta = {
+    compute: {
+      title: "Compute orchestration",
+      text: "Queue reproducible runs and inspect whether workers are actually available to claim them."
+    },
+    theory: {
+      title: "Theory workspace",
+      text: "Create claims and connect them to concrete runs so the proof-facing layer stays traceable."
+    },
+    sources: {
+      title: "Source intake and review",
+      text: "Register external material first, then review it against the baseline and rubric."
+    },
+    checks: {
+      title: "Checks and decision gates",
+      text: "Use direction review and modular probes to reject weak paths early."
+    },
+    backlog: {
+      title: "Research backlog",
+      text: "Create the next tasks, then scan the open queue before starting more compute."
+    }
+  };
+  const activeOperationsMeta = operationsViewMeta[operationsView];
 
   function reviewFormPatch(source) {
     return {
       sourceReviewId: source?.id || "",
       sourceReviewStatus: source?.review_status || "under_review",
       sourceReviewMapVariant: source?.map_variant || "unspecified",
+      sourceReviewSummary: source?.summary || "",
       sourceReviewTags: (source?.fallacy_tags || []).join(", "),
       sourceReviewNotes: source?.notes || "",
       sourceReviewPeerReviewed: rubricValueToSelect(source?.rubric?.peer_reviewed),
@@ -2154,6 +2881,24 @@ export default function App() {
       sourceReviewProvesCycleExclusion: rubricValueToSelect(source?.rubric?.proves_cycle_exclusion),
       sourceReviewUsesStatisticalArgument: rubricValueToSelect(source?.rubric?.uses_statistical_argument),
       sourceReviewValidationBacked: rubricValueToSelect(source?.rubric?.validation_backed)
+    };
+  }
+
+  function draftFormPatch(draft) {
+    return {
+      sourceReviewStatus: draft?.review_status || "under_review",
+      sourceReviewMapVariant: draft?.map_variant || "unspecified",
+      sourceReviewSummary: draft?.summary || "",
+      sourceReviewTags: (draft?.fallacy_tags || []).join(", "),
+      sourceReviewNotes: draft?.notes || "",
+      sourceReviewPeerReviewed: rubricValueToSelect(draft?.rubric?.peer_reviewed),
+      sourceReviewAcknowledgedErrors: rubricValueToSelect(draft?.rubric?.acknowledged_errors),
+      sourceReviewDefinesMapVariant: rubricValueToSelect(draft?.rubric?.defines_map_variant),
+      sourceReviewDistinguishesProof: rubricValueToSelect(draft?.rubric?.distinguishes_empirical_from_proof),
+      sourceReviewProvesDescent: rubricValueToSelect(draft?.rubric?.proves_descent),
+      sourceReviewProvesCycleExclusion: rubricValueToSelect(draft?.rubric?.proves_cycle_exclusion),
+      sourceReviewUsesStatisticalArgument: rubricValueToSelect(draft?.rubric?.uses_statistical_argument),
+      sourceReviewValidationBacked: rubricValueToSelect(draft?.rubric?.validation_backed)
     };
   }
 
@@ -2170,6 +2915,48 @@ export default function App() {
       notes: quickForms.sourceReviewNotes
     };
   }
+
+  useEffect(() => {
+    if (!state.computeProfile) {
+      return;
+    }
+    setQuickForms((current) => {
+      const nextSystem = String(state.computeProfile.system_percent ?? "100");
+      const nextCpu = String(state.computeProfile.cpu_percent ?? "100");
+      const nextGpu = String(state.computeProfile.gpu_percent ?? "100");
+      if (
+        nextSystem === current.computeSystemPercent &&
+        nextCpu === current.computeCpuPercent &&
+        nextGpu === current.computeGpuPercent
+      ) {
+        return current;
+      }
+      return {
+        ...current,
+        computeSystemPercent: nextSystem,
+        computeCpuPercent: nextCpu,
+        computeGpuPercent: nextGpu
+      };
+    });
+  }, [state.computeProfile]);
+
+  useEffect(() => {
+    if (!state.autopilotStatus) {
+      return;
+    }
+    setQuickForms((current) => {
+      const nextMaxTasks = String(state.autopilotStatus.max_tasks ?? current.autopilotMaxTasks ?? "3");
+      const nextInterval = String(state.autopilotStatus.interval_seconds ?? current.autopilotInterval ?? "1800");
+      if (nextMaxTasks === current.autopilotMaxTasks && nextInterval === current.autopilotInterval) {
+        return current;
+      }
+      return {
+        ...current,
+        autopilotMaxTasks: nextMaxTasks,
+        autopilotInterval: nextInterval
+      };
+    });
+  }, [state.autopilotStatus]);
 
   useEffect(() => {
     if (!selectedOrbitRun) {
@@ -2189,6 +2976,13 @@ export default function App() {
       window.clearInterval(timer);
     };
   }, [selectedOrbitRun?.id, orbitFrames.length]);
+
+  useEffect(() => {
+    if (selectedEvidence.kind !== "artifact" || !selectedEvidence.id) {
+      return;
+    }
+    previewArtifact(selectedEvidence.id);
+  }, [selectedEvidence.kind, selectedEvidence.id]);
 
   useEffect(() => {
     if (state.runs.length === 0) {
@@ -2323,6 +3117,7 @@ export default function App() {
 
   function openEvidence(kind, id) {
     setSelectedEvidence({ kind, id });
+    setEvidenceView("inspector");
     if (kind === "artifact") {
       setPreviewArtifactId(id);
     }
@@ -2347,6 +3142,7 @@ export default function App() {
 
   function selectSourceForReview(sourceId) {
     const source = state.sources.find((item) => item.id === sourceId);
+    setLlmDraft(null);
     setQuickForms((current) => ({
       ...current,
       ...reviewFormPatch(source || null)
@@ -2372,7 +3168,15 @@ export default function App() {
   }
 
   function focusEvidenceSection(sectionId, fallbackKind, fallbackItems) {
-    jumpToSection(sectionId);
+    const sectionView = {
+      "evidence-validated-results": "validated",
+      "evidence-runs": "runs",
+      "evidence-claims": "claims",
+      "evidence-artifacts": "artifacts",
+      "evidence-sources": "sources",
+      "evidence-inspector": "inspector"
+    }[sectionId] || "overview";
+    setEvidenceView(sectionView);
     const first = fallbackItems?.[0];
     if (first) {
       setSelectedEvidence({ kind: fallbackKind, id: first.id });
@@ -2398,9 +3202,12 @@ export default function App() {
       setActionState({
         pendingKey: "",
         tone: "success",
-        message: result?.id
-          ? `${actionKey} saved as ${result.id}.`
-          : `${actionKey} completed successfully.`
+        message:
+          Array.isArray(result?.applied_task_ids) && result.applied_task_ids.length > 0
+            ? `${actionKey} created tasks ${result.applied_task_ids.join(", ")}.`
+            : result?.id
+              ? `${actionKey} saved as ${result.id}.`
+              : `${actionKey} completed successfully.`
       });
       setRefreshNonce((current) => current + 1);
       return result;
@@ -2591,16 +3398,143 @@ export default function App() {
         postJson(`${endpoints.sources}/${quickForms.sourceReviewId}/review`, {
           review_status: quickForms.sourceReviewStatus,
           map_variant: quickForms.sourceReviewMapVariant,
+          summary: quickForms.sourceReviewSummary,
           notes: quickForms.sourceReviewNotes,
           fallacy_tags: parseCsvList(quickForms.sourceReviewTags),
           rubric: buildReviewRubricPayload()
         }),
       (result) => {
         setSourceReviewResult(result);
+        setLlmDraft(null);
         setQuickForms((current) => ({
           ...current,
           ...reviewFormPatch(result || null)
         }));
+      }
+    );
+  }
+
+  async function handleSourceDraftRequest() {
+    if (!quickForms.sourceReviewId) {
+      setActionState({
+        pendingKey: "",
+        tone: "error",
+        message: "Select a source before asking Gemini for a draft review."
+      });
+      return;
+    }
+    await runAction(
+      "llm review draft",
+      () => postJson(endpoints.sourceReviewDraft(quickForms.sourceReviewId)),
+      (result) => {
+        setLlmDraft(result);
+        setQuickForms((current) => ({
+          ...current,
+          ...draftFormPatch(result || null)
+        }));
+      }
+    );
+  }
+
+  async function handleLlmSetupSubmit(event) {
+    event.preventDefault();
+    if (!quickForms.llmSetupApiKey.trim()) {
+      setActionState({
+        pendingKey: "",
+        tone: "error",
+        message: "Enter a Gemini API key before enabling local setup."
+      });
+      return;
+    }
+    await runAction(
+      "llm setup",
+      () =>
+        postJson(endpoints.llmSetup, {
+          api_key: quickForms.llmSetupApiKey.trim(),
+          enabled: true,
+          model: quickForms.llmSetupModel
+        }),
+      (result) => {
+        setState((current) => ({ ...current, llmStatus: result }));
+        setQuickForms((current) => ({
+          ...current,
+          llmSetupApiKey: ""
+        }));
+      }
+    );
+  }
+
+  async function handleAutopilotRun(apply = false) {
+    await runAction(
+      apply ? "gemini autopilot apply" : "gemini autopilot",
+      () =>
+        postJson(endpoints.llmAutopilot, {
+          apply,
+          max_tasks: Number(quickForms.autopilotMaxTasks || 3)
+        }),
+      (result) => {
+        setAutopilotResult(result);
+        if (apply) {
+          setOperationsView("backlog");
+        }
+      }
+    );
+  }
+
+  async function handleAutopilotConfig(enabled) {
+    await runAction(
+      enabled ? "enable autopilot" : "pause autopilot",
+      () =>
+        postJson(endpoints.llmAutopilotConfig, {
+          enabled,
+          interval_seconds: Number(quickForms.autopilotInterval || 7200),
+          max_tasks: Number(quickForms.autopilotMaxTasks || 2)
+        }),
+      (result) => {
+        setState((current) => ({
+          ...current,
+          autopilotStatus: result
+        }));
+      }
+    );
+  }
+
+  async function handleComputeProfileSubmit(event) {
+    event.preventDefault();
+    await runAction(
+      "compute profile",
+      () =>
+        postJson(endpoints.computeProfile, {
+          system_percent: Number(quickForms.computeSystemPercent || 100),
+          cpu_percent: Number(quickForms.computeCpuPercent || 100),
+          gpu_percent: Number(quickForms.computeGpuPercent || 100)
+        }),
+      (result) => {
+        setState((current) => ({
+          ...current,
+          computeProfile: result
+        }));
+      }
+    );
+  }
+
+  async function handleDeleteSource(sourceId) {
+    if (!sourceId) {
+      return;
+    }
+    await runAction(
+      "delete source",
+      () => deleteJson(endpoints.sourceDelete(sourceId)),
+      () => {
+        if (quickForms.sourceReviewId === sourceId) {
+          setQuickForms((current) => ({
+            ...current,
+            ...reviewFormPatch(null)
+          }));
+          setSourceReviewHistory([]);
+          setSourceReviewResult(null);
+          setLlmDraft(null);
+        }
       }
     );
   }
@@ -2625,8 +3559,13 @@ export default function App() {
     <main className={navOpen ? "page-shell app-shell nav-open" : "page-shell app-shell"}>
       <aside className="sidebar" aria-label="Dashboard navigation">
         <div className="sidebar-brand">
-          <p className="eyebrow">Collatz Lab</p>
-          <strong>Research shell</strong>
+          <div className="brand-lockup">
+            <img className="brand-mark" src="/icon.svg" alt="Collatz Lab icon" title="Collatz Lab mark: a collapsing square grid on the left and a C-shaped orbit on the right." />
+            <div>
+              <p className="eyebrow">Collatz Lab</p>
+              <strong>Research shell</strong>
+            </div>
+          </div>
         </div>
         <div className="sidebar-section">
           <span className="sidebar-kicker">Live run</span>
@@ -2697,6 +3636,73 @@ export default function App() {
             Refresh
           </button>
         </div>
+        <form className="compute-control-panel" onSubmit={handleComputeProfileSubmit}>
+          <div className="compute-control-header">
+            <span className="sidebar-kicker">Compute budget</span>
+            <strong>{computeProfile.system_percent}% system</strong>
+          </div>
+          <label className="compute-slider-row">
+            <span>Whole system</span>
+            <strong>{quickForms.computeSystemPercent}%</strong>
+            <input
+              type="range"
+              min="0"
+              max="100"
+              step="5"
+              value={quickForms.computeSystemPercent}
+              onChange={(event) => updateQuickForm("computeSystemPercent", event.target.value)}
+            />
+          </label>
+          <label className="compute-slider-row">
+            <span>CPU lane</span>
+            <strong>{quickForms.computeCpuPercent}%</strong>
+            <input
+              type="range"
+              min="0"
+              max="100"
+              step="5"
+              value={quickForms.computeCpuPercent}
+              onChange={(event) => updateQuickForm("computeCpuPercent", event.target.value)}
+            />
+          </label>
+          <label className="compute-slider-row">
+            <span>GPU lane</span>
+            <strong>{quickForms.computeGpuPercent}%</strong>
+            <input
+              type="range"
+              min="0"
+              max="100"
+              step="5"
+              value={quickForms.computeGpuPercent}
+              onChange={(event) => updateQuickForm("computeGpuPercent", event.target.value)}
+            />
+          </label>
+          <p className="sidebar-note">
+            Effective budgets now: CPU {effectiveCpuBudget}% and GPU {effectiveGpuBudget}%. These sliders throttle future batches and new maintenance runs.
+          </p>
+          <button className="secondary-button" type="submit" disabled={actionState.pendingKey === "compute profile"}>
+            {actionState.pendingKey === "compute profile" ? "Saving..." : "Apply budget"}
+          </button>
+        </form>
+        <div className="sidebar-legal">
+          <div className="legal-row">
+            <a href="https://github.com/cosmintrica/CollatzLab" target="_blank" rel="noreferrer">GitHub</a>
+            <span className="legal-separator">•</span>
+            <a href="https://github.com/cosmintrica/CollatzLab/blob/main/LICENSE" target="_blank" rel="noreferrer">Apache 2.0</a>
+            <span className="legal-separator">•</span>
+            <a
+              href="https://revolut.me/mtvtrk"
+              target="_blank"
+              rel="noreferrer"
+              title="Optional support. Helps with development time and Gemini API costs."
+            >
+              Donate
+            </a>
+          </div>
+          <div className="legal-row">
+            <span>Copyright (c) 2026 Cosmin Trica</span>
+          </div>
+        </div>
       </aside>
       {navOpen ? <button type="button" className="nav-backdrop" aria-label="Close navigation" onClick={() => setNavOpen(false)} /> : null}
       <div className="main-column">
@@ -2712,8 +3718,13 @@ export default function App() {
             <span />
           </button>
           <div className="mobile-topbar-copy">
-            <span>Collatz Lab</span>
-            <strong>{activeTabLabel}</strong>
+            <div className="brand-lockup compact">
+              <img className="brand-mark small" src="/icon.svg" alt="Collatz Lab icon" title="Collatz Lab mark: a collapsing square grid on the left and a C-shaped orbit on the right." />
+              <div>
+                <span>Collatz Lab</span>
+                <strong>{activeTabLabel}</strong>
+              </div>
+            </div>
           </div>
           <button type="button" className="secondary-button mobile-refresh" onClick={() => setRefreshNonce((current) => current + 1)}>
             Refresh
@@ -2722,6 +3733,46 @@ export default function App() {
 
         {state.error ? <section className="error-banner">{state.error}</section> : null}
         {state.loading ? <section className="loading-banner">Loading real data from the local API...</section> : null}
+        {state.llmStatus && !state.llmStatus.ready ? (
+          <section className="setup-banner">
+            <div>
+              <strong>Enable Gemini locally</strong>
+              <p>
+                No local Gemini key is active yet. Paste your own key here once and the app will write it to
+                <code> .env </code>
+                in this workspace.
+              </p>
+            </div>
+            <form className="setup-banner-form" onSubmit={handleLlmSetupSubmit}>
+              <input
+                className="filter-input"
+                type="password"
+                value={quickForms.llmSetupApiKey}
+                onChange={(event) => updateQuickForm("llmSetupApiKey", event.target.value)}
+                placeholder="Gemini API key"
+                autoComplete="off"
+              />
+              <input
+                className="filter-input"
+                list="gemini-model-suggestions"
+                value={quickForms.llmSetupModel}
+                onChange={(event) => updateQuickForm("llmSetupModel", event.target.value)}
+                placeholder="Gemini model"
+              />
+              <datalist id="gemini-model-suggestions">
+                {llmModelSuggestions.map((model) => (
+                  <option key={model} value={model} />
+                ))}
+              </datalist>
+              <button className="secondary-button" type="submit" disabled={actionState.pendingKey === "llm setup"}>
+                {actionState.pendingKey === "llm setup" ? "Saving..." : "Save key"}
+              </button>
+            </form>
+          </section>
+        ) : null}
+        <div className="global-math-ticker-shell">
+          <MathTicker run={tickerSourceRun} orbit={tickerOrbitFrames} frameIndex={orbitFrame} isActive={anyLiveRun} />
+        </div>
 
         <div className="workspace-shell">
         <div className="workspace-primary">
@@ -2747,7 +3798,7 @@ export default function App() {
                 <strong>{hasLoaded ? `${summary.run_count} runs tracked` : "Loading..."}</strong>
                 <p>
                   {hasLoaded
-                    ? `${summary.validated_run_count} validated, ${summary.worker_count ?? state.workers.length} workers, ${supportedClaims} supported claims.`
+                    ? `${summary.validated_run_count} validated, ${summary.worker_count ?? state.workers.length} registered workers, ${summary.active_worker_count ?? liveWorkers.length} busy now, ${supportedClaims} supported claims.`
                     : "Connecting to API..."}
                 </p>
               </div>
@@ -2762,7 +3813,7 @@ export default function App() {
               <SummaryCard label="Directions" value={summary.direction_count} note="parallel tracks" />
               <SummaryCard label="Runs" value={summary.run_count} note="compute records" />
               <SummaryCard label="Validated" value={summary.validated_run_count} note="replayed runs" />
-              <SummaryCard label="Workers" value={summary.worker_count ?? state.workers.length} note={`${summary.active_worker_count ?? liveWorkers.length} active`} />
+              <SummaryCard label="Workers" value={summary.worker_count ?? state.workers.length} note={`${summary.active_worker_count ?? liveWorkers.length} busy now`} />
               <SummaryCard label="Claims" value={supportedClaims} note="with evidence" />
               <SummaryCard label="Tasks" value={summary.open_task_count} note="open items" />
               <SummaryCard label="Artifacts" value={summary.artifact_count} note="outputs" />
@@ -2970,7 +4021,6 @@ export default function App() {
 
         {activeTab === "live-math" ? (
         <section className="tab-panel live-math-page">
-          <MathTicker run={selectedOrbitRun} orbit={orbitFrames} frameIndex={orbitFrame} />
           <SectionIntro
             title="Live Math"
             text="This page is the calculation room: formulas, worker checkpoint, and record tape are all visible in one place."
@@ -3113,6 +4163,9 @@ export default function App() {
                       {selectedOrbitRun.range_start} - {selectedOrbitRun.range_end} | {selectedOrbitRun.kernel} | {selectedOrbitRun.hardware}
                     </p>
                     <p className="meta-line">
+                      {runRangeMagnitude(selectedOrbitRun)} | {runMilestoneLabel(selectedOrbitRun)}
+                    </p>
+                    <p className="meta-line">
                       checkpoint {selectedOrbitRun.checkpoint?.last_processed ?? "unknown"} | next {selectedOrbitRun.checkpoint?.next_value ?? "unknown"}
                     </p>
                   </article>
@@ -3165,14 +4218,17 @@ export default function App() {
               </div>
             </article>
           </div>
+          <p className="fine-print">
+            * Live Math lists compute runs only. Gemini-generated task and report IDs continue separately in Operations and Evidence.
+          </p>
         </section>
         ) : null}
 
         {activeTab === "directions" ? (
         <section className="tab-panel">
           <SectionIntro
-            title="Research directions"
-            text="Each direction should remain understandable on its own: what it is testing, who owns it, and what counts as success or abandonment."
+            title="Tracks"
+            text="Keep compute, structure analysis, and lemma work distinct. Each lane should say what it owns, which evidence feeds it, and what the next bounded step is."
             action={
               <ShowMoreButton
                 total={state.directions.length}
@@ -3182,10 +4238,140 @@ export default function App() {
               />
             }
           />
+          <SectionSubnav
+            label="Track views"
+            items={tracksViews}
+            activeId={tracksView}
+            onChange={setTracksView}
+          />
           {!hasLoaded ? (
             <section className="loading-banner">Waiting for real direction data...</section>
           ) : state.directions.length === 0 ? (
             <EmptyState title="No directions yet" text="Seed the lab or create a direction in the backend first." />
+          ) : tracksView === "overview" ? (
+            <>
+              <div className="capability-grid">
+                <CapabilityCard
+                  label="Directions"
+                  value={state.directions.length}
+                  note="The lab currently separates evidence work, structural work, and lemma work."
+                />
+                <CapabilityCard
+                  label="Open tasks"
+                  value={filteredTasks.length}
+                  note="Gemini and humans both add work here. These are tasks, not compute runs."
+                />
+                <CapabilityCard
+                  label="Runs saved"
+                  value={state.runs.length}
+                  note={`Live Math reads only from compute runs. Latest saved run: ${latestRunId}.`}
+                />
+                <CapabilityCard
+                  label="Claims tracked"
+                  value={state.claims.length}
+                  note="Theory lives here, separate from validation and run output."
+                />
+              </div>
+              <div className="evidence-summary-strip">
+                {state.directions.map((direction) => (
+                  <article key={direction.slug} className="summary-card">
+                    <span>{direction.title}</span>
+                    <strong>{prettyLabel(direction.status)}</strong>
+                    <p>
+                      {directionStats[direction.slug]?.computeTasks ?? 0} compute tasks, {directionStats[direction.slug]?.theoryTasks ?? 0} theory tasks,
+                      {" "}{directionStats[direction.slug]?.runs ?? 0} saved runs, {directionStats[direction.slug]?.claims ?? 0} claims.
+                    </p>
+                  </article>
+                ))}
+              </div>
+            </>
+          ) : tracksView === "backlog" ? (
+            <div className="stack-list">
+              <div className="surface-split">
+                <article className="surface-card">
+                  <span className="surface-kicker">Compute backlog</span>
+                  <strong>{computeBacklogTasks.length}</strong>
+                  <p>Tasks that can queue or drive real runs. These should keep workers busy.</p>
+                </article>
+                <article className="surface-card">
+                  <span className="surface-kicker">Theory backlog</span>
+                  <strong>{theoryBacklogTasks.length}</strong>
+                  <p>Claims, structure analysis, source review, and proof-facing work that may produce artifacts before runs.</p>
+                </article>
+              </div>
+              <div className="track-backlog-grid">
+                <article className="panel direction-panel">
+                  <SectionIntro
+                    title="Compute backlog"
+                    text="These tasks are the best candidates to become queued or running compute."
+                    action={
+                      <ShowMoreButton
+                        total={computeBacklogTasks.length}
+                        visible={visible.computeTasks}
+                        label="compute tasks"
+                        onClick={() => reveal("computeTasks", 6)}
+                      />
+                    }
+                  />
+                  {computeBacklogTasks.length === 0 ? (
+                    <p className="meta-line">No compute-facing tasks are open right now.</p>
+                  ) : (
+                    <div className="stack-list compact-stack">
+                      {visibleComputeTasks.map((task) => (
+                        <article key={task.id} className="list-card">
+                          <strong>{task.title}</strong>
+                          <p>{task.description}</p>
+                          <p className="meta-line">{task.id} | {task.direction_slug} | {task.kind} | priority {task.priority}</p>
+                        </article>
+                      ))}
+                    </div>
+                  )}
+                  <div className="track-mini-groups">
+                    {groupedComputeTasksByDirection.map(({ direction, tasks }) => (
+                      <div key={`compute-${direction.slug}`} className="track-mini-row">
+                        <strong>{direction.title}</strong>
+                        <span>{tasks.length}</span>
+                      </div>
+                    ))}
+                  </div>
+                </article>
+                <article className="panel direction-panel">
+                  <SectionIntro
+                    title="Theory backlog"
+                    text="These tasks can legitimately produce claims, reviews, and analysis artifacts before any run is queued."
+                    action={
+                      <ShowMoreButton
+                        total={theoryBacklogTasks.length}
+                        visible={visible.theoryTasks}
+                        label="theory tasks"
+                        onClick={() => reveal("theoryTasks", 6)}
+                      />
+                    }
+                  />
+                  {theoryBacklogTasks.length === 0 ? (
+                    <p className="meta-line">No theory-facing tasks are open right now.</p>
+                  ) : (
+                    <div className="stack-list compact-stack">
+                      {visibleTheoryTasks.map((task) => (
+                        <article key={task.id} className="list-card">
+                          <strong>{task.title}</strong>
+                          <p>{task.description}</p>
+                          <p className="meta-line">{task.id} | {task.direction_slug} | {task.kind} | priority {task.priority}</p>
+                        </article>
+                      ))}
+                    </div>
+                  )}
+                  <div className="track-mini-groups">
+                    {groupedTheoryTasksByDirection.map(({ direction, tasks }) => (
+                      <div key={`theory-${direction.slug}`} className="track-mini-row">
+                        <strong>{direction.title}</strong>
+                        <span>{tasks.length}</span>
+                      </div>
+                    ))}
+                  </div>
+                </article>
+              </div>
+            </div>
           ) : (
             <div className="stack-list">
               {visibleDirections.map((direction) => (
@@ -3218,10 +4404,141 @@ export default function App() {
                       <span className="metric-label">Score</span>
                       <strong>{direction.score}</strong>
                     </div>
+                    <div>
+                      <span className="metric-label">Compute tasks</span>
+                      <strong>{directionStats[direction.slug]?.computeTasks ?? 0}</strong>
+                    </div>
+                    <div>
+                      <span className="metric-label">Theory tasks</span>
+                      <strong>{directionStats[direction.slug]?.theoryTasks ?? 0}</strong>
+                    </div>
+                    <div>
+                      <span className="metric-label">Open tasks</span>
+                      <strong>{directionStats[direction.slug]?.tasks ?? 0}</strong>
+                    </div>
+                    <div>
+                      <span className="metric-label">Active/queued</span>
+                      <strong>{directionStats[direction.slug]?.activeRuns ?? 0}</strong>
+                    </div>
+                    <div>
+                      <span className="metric-label">Validated</span>
+                      <strong>{directionStats[direction.slug]?.validatedRuns ?? 0}</strong>
+                    </div>
+                    <div>
+                      <span className="metric-label">Saved runs</span>
+                      <strong>{directionStats[direction.slug]?.runs ?? 0}</strong>
+                    </div>
+                    <div>
+                      <span className="metric-label">Claims</span>
+                      <strong>{directionStats[direction.slug]?.claims ?? 0}</strong>
+                    </div>
                   </div>
                   <div className="note-block">
                     <p><strong>Success</strong> {direction.success_criteria}</p>
                     <p><strong>Abandon</strong> {direction.abandon_criteria}</p>
+                    <p><strong>Read this lane as</strong> {directionGuide[direction.slug]?.role || "A research lane with its own evidence and abandonment rules."}</p>
+                    <p><strong>Evidence shape</strong> {directionGuide[direction.slug]?.evidence || "Mixed lane."}</p>
+                    <p>
+                      <strong>Why zero runs can still be correct</strong>{" "}
+                      {directionStats[direction.slug]?.runs === 0
+                        ? "This lane is currently producing theory or structure tasks rather than saved compute runs."
+                        : "This lane already has saved compute evidence in the run ledger."}
+                    </p>
+                  </div>
+                </article>
+              ))}
+            </div>
+          )}
+        </section>
+        ) : null}
+
+        {activeTab === "community" ? (
+        <section className="tab-panel">
+          <SectionIntro
+            title="Community"
+            text="Tracked feedback from r/Collatz: signal, takeaway, implementation."
+            action={<span className="filter-count">{trackedComments.length} tracked comments</span>}
+          />
+          <div className="community-summary-strip">
+            <article className="summary-card">
+              <span>Tracked comments</span>
+              <strong>{trackedComments.length}</strong>
+              <p>Pinned feedback with implementation links.</p>
+            </article>
+            <article className="summary-card">
+              <span>Implemented actions</span>
+              <strong>{communityActionCount}</strong>
+              <p>Tasks or feature links created from comments.</p>
+            </article>
+            <article className="summary-card">
+              <span>Source</span>
+              <strong>r/Collatz</strong>
+              <p>Fetched natively from Reddit JSON.</p>
+            </article>
+          </div>
+          {trackedComments.length === 0 ? (
+            <EmptyState
+              title="No tracked community signals yet"
+              text="The backend has not fetched the pinned feedback comments yet."
+            />
+          ) : (
+            <div className="community-grid">
+              {trackedComments.map((comment, index) => (
+                <article key={comment.id} className="panel community-card">
+                  <div className="community-card-top">
+                    <div className="community-card-heading">
+                      <p className="eyebrow">Signal {index + 1}</p>
+                      <h3>{comment.title}</h3>
+                      <p className="community-meta">
+                        u/{comment.author} | {formatRelativeTime(comment.created_at)} | score {comment.score}
+                      </p>
+                    </div>
+                    <a
+                      className="secondary-button detail-download-link"
+                      href={comment.permalink}
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      Open comment
+                    </a>
+                  </div>
+
+                  <div className="community-card-body community-card-body-compact">
+                    <article className="community-quote-card community-block">
+                      <span className="metric-label">Comment</span>
+                      <p className="community-quote community-quote-compact">{comment.body}</p>
+                    </article>
+                    <article className="community-takeaway-card community-block">
+                      <span className="metric-label">Takeaway</span>
+                      <p className="community-copy">{comment.takeaway}</p>
+                    </article>
+                    <article className="community-takeaway-card community-block">
+                      <span className="metric-label">What changed</span>
+                      <p className="community-copy">{comment.implemented_note}</p>
+                    </article>
+                  </div>
+
+                  <div className="community-actions-panel">
+                    <span className="metric-label">Implemented in the lab</span>
+                    <div className="community-action-row">
+                      {comment.implemented_items.length > 0
+                        ? comment.implemented_items.map((item) => (
+                          <button
+                            key={item.id}
+                            type="button"
+                            className="detail-link-button community-action-chip"
+                            title={`${item.id} | ${item.label}`}
+                            onClick={() => {
+                              setActiveTab("queue");
+                              setOperationsView("backlog");
+                              updateFilter("taskQuery", item.id);
+                            }}
+                          >
+                            {item.id}
+                          </button>
+                        ))
+                        : <span className="meta-line">No linked actions yet.</span>}
+                    </div>
                   </div>
                 </article>
               ))}
@@ -3236,114 +4553,136 @@ export default function App() {
             title="Evidence"
             text="Runs, claims, and artifacts are shown separately so you can inspect compute output without mixing it with proof notes."
           />
-          <div className="note-block">
-            <p><strong>Research stance</strong> Verification runs are evidence and falsification tools, not the proof strategy itself. The proof-facing work stays in claims, parity filters, inverse-tree structure, source review, and lemma testing.</p>
-          </div>
-          <div className="evidence-guide-grid">
-            {evidenceGuide.map((item) => (
-              <article key={item.kind} className="list-card evidence-guide-card">
-                <span className={`evidence-type-pill evidence-type-${item.kind}`}>{item.title}</span>
-                <p>{item.detail}</p>
-              </article>
-            ))}
-          </div>
-          <div className="evidence-summary-strip">
-            <button
-              className="summary-card evidence-summary-card summary-card-button"
-              type="button"
-              onClick={() => focusEvidenceSection("evidence-validated-results", "run", validatedRuns)}
-            >
-              <span>Validated results</span>
-              <strong>{validatedRuns.length}</strong>
-              <p>Independently replayed runs you can trust more than raw completions.</p>
-            </button>
-            <button
-              className="summary-card evidence-summary-card summary-card-button"
-              type="button"
-              onClick={() => focusEvidenceSection("evidence-claims", "claim", filteredClaims)}
-            >
-              <span>Claims</span>
-              <strong>{filteredClaims.length}</strong>
-              <p>Mathematical statements, separate from compute logs and separate from proof attempts.</p>
-            </button>
-            <button
-              className="summary-card evidence-summary-card summary-card-button"
-              type="button"
-              onClick={() => focusEvidenceSection("evidence-artifacts", "artifact", filteredArtifacts)}
-            >
-              <span>Run artifacts</span>
-              <strong>{filteredArtifacts.length}</strong>
-              <p>JSON outputs, validation reports, and note files available for preview or export.</p>
-            </button>
-          </div>
-          <article className="panel">
-            <SectionIntro
-              title="Evidence tracking ledger"
-              text="This ledger makes the distinction explicit: validated results, claims, artifacts, and raw runs are separate record types."
-              action={
-                <ShowMoreButton
-                  total={evidenceLedger.length}
-                  visible={visible.ledger}
-                  label="ledger entries"
-                  onClick={() => reveal("ledger", 6)}
-                />
-              }
-            />
-            {visibleEvidenceLedger.length === 0 ? (
-              <EmptyState title="No evidence yet" text="Runs, claims, and artifacts will appear here as soon as they are saved." />
-            ) : (
-              <div className="stack-list">
-                {visibleEvidenceLedger.map((item) => (
-                  <article
-                    key={item.key}
-                    className={
-                      selectedEvidence.kind === item.openKind && selectedEvidence.id === item.id
-                        ? "list-card evidence-card-selected evidence-ledger-card"
-                        : "list-card evidence-ledger-card"
-                    }
-                  >
-                    <div className="card-head">
-                      <div>
-                        <div className="evidence-ledger-headline">
-                          <span className={`evidence-type-pill evidence-type-${item.kind}`}>{prettyLabel(item.kind)}</span>
-                          <StatusPill value={item.status} />
-                        </div>
-                        <h3>{item.title}</h3>
-                        <p>{item.id} | {item.direction}</p>
-                      </div>
-                      <span className="filter-count">{formatTimestamp(item.timestamp)}</span>
-                    </div>
-                    <p>{item.summary}</p>
-                    <p className="meta-line">{item.meta}</p>
-                    <div className="card-action-row">
-                      <button className="secondary-button" type="button" onClick={() => openEvidence(item.openKind, item.id)}>
-                        Open in inspector
-                      </button>
-                      <button className="secondary-button" type="button" onClick={() => exportJsonFile(`${item.id}.json`, item)}>
-                        Export summary
-                      </button>
-                    </div>
+          <SectionSubnav
+            label="Evidence views"
+            items={evidenceViews}
+            activeId={evidenceView}
+            onChange={setEvidenceView}
+          />
+          {evidenceView === "overview" ? (
+            <>
+              <div className="evidence-mini-guide">
+                <span><strong>Verification</strong> = evidence, not proof.</span>
+                <span><strong>`COL-####`</strong> = one shared lab sequence across runs, tasks, claims, artifacts, and sources.</span>
+                <span><strong>`gemini-autopilot-...`</strong> = planning report, not validated math output.</span>
+              </div>
+              <div className="evidence-guide-grid">
+                {evidenceGuide.map((item) => (
+                  <article key={item.kind} className="list-card evidence-guide-card">
+                    <span className={`evidence-type-pill evidence-type-${item.kind}`}>{item.title}</span>
+                    <p>{item.detail}</p>
                   </article>
                 ))}
               </div>
-            )}
-          </article>
-          <EvidenceDetailPanel
-            selectedKind={selectedEvidence.kind}
-            selectedRun={selectedEvidenceRun}
-            selectedClaim={selectedEvidenceClaim}
-            selectedArtifact={selectedEvidenceArtifact}
-            relatedLinks={selectedEvidenceLinks}
-            relatedRuns={relatedRuns}
-            relatedClaims={relatedClaims}
-            relatedArtifacts={relatedArtifacts}
-            previewPayload={previewPayload}
-            onSelectEvidence={openEvidence}
-            onPreviewArtifact={previewArtifact}
-            onExportJson={exportJsonFile}
-            onExportText={exportTextFile}
-          />
+              <div className="evidence-summary-strip">
+                <button
+                  className="summary-card evidence-summary-card summary-card-button"
+                  type="button"
+                  onClick={() => focusEvidenceSection("evidence-validated-results", "run", validatedRuns)}
+                >
+                  <span>Validated results</span>
+                  <strong>{validatedRuns.length}</strong>
+                  <p>Independently replayed runs you can trust more than raw completions.</p>
+                </button>
+                <button
+                  className="summary-card evidence-summary-card summary-card-button"
+                  type="button"
+                  onClick={() => focusEvidenceSection("evidence-claims", "claim", filteredClaims)}
+                >
+                  <span>Claims</span>
+                  <strong>{filteredClaims.length}</strong>
+                  <p>Mathematical statements, separate from compute logs and separate from proof attempts.</p>
+                </button>
+                <button
+                  className="summary-card evidence-summary-card summary-card-button"
+                  type="button"
+                  onClick={() => focusEvidenceSection("evidence-artifacts", "artifact", filteredArtifacts)}
+                >
+                  <span>Run artifacts</span>
+                  <strong>{filteredArtifacts.length}</strong>
+                  <p>JSON outputs, validation reports, and note files available for preview or export.</p>
+                </button>
+              </div>
+              <article className="panel">
+                <SectionIntro
+                  title="Evidence tracking ledger"
+                  text="This is the fast scan. Open the inspector only after you spot the exact record you want."
+                  action={
+                    <ShowMoreButton
+                      total={evidenceLedger.length}
+                      visible={visible.ledger}
+                      label="ledger entries"
+                      onClick={() => reveal("ledger", 6)}
+                    />
+                  }
+                />
+                <div className="note-block">
+                  <p><strong>Fast reading rule</strong> `Validated result` means an independent replay matched the stored aggregates. `Artifact/report` means a file was saved. `Claim` means theory. Those are different record types even when their IDs sit near each other.</p>
+                </div>
+                {visibleEvidenceLedger.length === 0 ? (
+                  <EmptyState title="No evidence yet" text="Runs, claims, and artifacts will appear here as soon as they are saved." />
+                ) : (
+                  <div className="stack-list evidence-ledger-list">
+                    {visibleEvidenceLedger.map((item) => (
+                      <article
+                        key={item.key}
+                        className={
+                          selectedEvidence.kind === item.openKind && selectedEvidence.id === item.id
+                            ? "list-card evidence-card-selected evidence-ledger-card"
+                            : "list-card evidence-ledger-card"
+                        }
+                      >
+                        <div className="evidence-ledger-topline">
+                          <div className="evidence-ledger-headline">
+                            <span className={`evidence-type-pill evidence-type-${item.kind}`}>{prettyLabel(item.kind)}</span>
+                            <StatusPill value={item.status} />
+                          </div>
+                          <span className="filter-count">{formatTimestamp(item.timestamp)}</span>
+                        </div>
+                        <div className="evidence-ledger-body">
+                          <div>
+                            <h3>{item.title}</h3>
+                            <p className="meta-line">{item.id} | {item.direction}</p>
+                          </div>
+                          <p className="evidence-ledger-summary">{item.summary}</p>
+                          <p className="meta-line">{item.meta}</p>
+                        </div>
+                        <div className="card-action-row">
+                          <button className="secondary-button" type="button" onClick={() => openEvidence(item.openKind, item.id)}>
+                            Open in inspector
+                          </button>
+                          <button className="secondary-button" type="button" onClick={() => exportJsonFile(`${item.id}.json`, item)}>
+                            Export summary
+                          </button>
+                        </div>
+                      </article>
+                    ))}
+                  </div>
+                )}
+              </article>
+            </>
+          ) : null}
+          {evidenceView === "inspector" ? (
+            <div id="evidence-inspector">
+              <EvidenceDetailPanel
+                selectedKind={selectedEvidence.kind}
+                selectedRun={selectedEvidenceRun}
+                selectedClaim={selectedEvidenceClaim}
+                selectedArtifact={selectedEvidenceArtifact}
+                relatedLinks={selectedEvidenceLinks}
+                relatedRuns={relatedRuns}
+                relatedClaims={relatedClaims}
+                relatedArtifacts={relatedArtifacts}
+                previewPayload={previewPayload}
+                onSelectEvidence={openEvidence}
+                onPreviewArtifact={previewArtifact}
+                onExportJson={exportJsonFile}
+                onExportText={exportTextFile}
+              />
+            </div>
+          ) : null}
           <div className="tab-subgrid">
+            {evidenceView === "validated" ? (
             <article className="panel" id="evidence-validated-results">
               <SectionIntro
                 title="Validated results"
@@ -3393,7 +4732,9 @@ export default function App() {
                 </div>
               )}
             </article>
+            ) : null}
 
+            {evidenceView === "runs" ? (
             <article className="panel" id="evidence-runs">
               <SectionIntro
                 title="Runs"
@@ -3491,7 +4832,9 @@ export default function App() {
                 </div>
               )}
             </article>
+            ) : null}
 
+            {evidenceView === "claims" ? (
             <article className="panel" id="evidence-claims">
               <SectionIntro
                 title="Claims"
@@ -3548,7 +4891,9 @@ export default function App() {
                 </div>
               )}
             </article>
+            ) : null}
 
+            {evidenceView === "artifacts" ? (
             <article className="panel" id="evidence-artifacts">
               <SectionIntro
                 title="Artifacts"
@@ -3605,8 +4950,10 @@ export default function App() {
                 </div>
               )}
             </article>
+            ) : null}
 
-            <article className="panel">
+            {evidenceView === "sources" ? (
+            <article className="panel" id="evidence-sources">
               <SectionIntro
                 title="External sources"
                 text="Blogs, forums, papers, and self-published proof attempts are tracked separately from internal evidence."
@@ -3699,21 +5046,56 @@ export default function App() {
                         <span className={source.rubric.validation_backed ? "rubric-badge yes" : "rubric-badge"}>validation</span>
                       </div>
                       <p className="meta-line">{source.url || "No URL stored"}{source.year ? ` | ${source.year}` : ""}</p>
+                      <div className="card-action-row">
+                        <button
+                          className="secondary-button"
+                          type="button"
+                          onClick={() => {
+                            setActiveTab("queue");
+                            setOperationsView("sources");
+                            setQuickForms((current) => ({
+                              ...current,
+                              ...reviewFormPatch(source)
+                            }));
+                          }}
+                        >
+                          Review source
+                        </button>
+                        <button
+                          className="secondary-button"
+                          type="button"
+                          onClick={() => handleDeleteSource(source.id)}
+                          disabled={actionState.pendingKey === "delete source"}
+                        >
+                          {actionState.pendingKey === "delete source" ? "Deleting..." : "Delete source"}
+                        </button>
+                      </div>
                     </article>
                   ))}
                 </div>
               )}
             </article>
+            ) : null}
           </div>
         </section>
         ) : null}
 
         {activeTab === "queue" ? (
         <section className="tab-panel">
+          <SectionIntro
+            title="Operations"
+            text="This page writes live data into the lab. Each module below handles one kind of work instead of mixing everything together."
+          />
+          <SectionSubnav
+            label="Operations views"
+            items={operationsViews}
+            activeId={operationsView}
+            onChange={setOperationsView}
+          />
           <article className="panel subpanel">
             <SectionIntro
-              title="Create work"
-              text="These actions write directly into the same local lab database the CLI uses."
+              title={activeOperationsMeta.title}
+              text={activeOperationsMeta.text}
               action={<span className="filter-count">writes live data</span>}
             />
             {actionState.message ? (
@@ -3722,6 +5104,39 @@ export default function App() {
               </div>
             ) : null}
             <div className="action-grid">
+              {operationsView === "sources" && !state.llmStatus?.ready ? (
+              <form className="action-card" onSubmit={handleLlmSetupSubmit}>
+                <h3>Enable Gemini</h3>
+                <p>Local-only setup. The key is written to this workspace so review drafts and autopilot can run here.</p>
+                <div className="action-fields">
+                  <ActionField label="Gemini API key" wide>
+                    <input
+                      className="filter-input"
+                      type="password"
+                      value={quickForms.llmSetupApiKey}
+                      onChange={(event) => updateQuickForm("llmSetupApiKey", event.target.value)}
+                      placeholder="Paste your Gemini API key"
+                      autoComplete="off"
+                      required
+                    />
+                  </ActionField>
+                  <ActionField label="Model" wide>
+                    <input
+                      className="filter-input"
+                      list="gemini-model-suggestions"
+                      value={quickForms.llmSetupModel}
+                      onChange={(event) => updateQuickForm("llmSetupModel", event.target.value)}
+                      placeholder="Gemini model"
+                    />
+                  </ActionField>
+                </div>
+                <button className="secondary-button action-button" type="submit" disabled={actionState.pendingKey === "llm setup"}>
+                  {actionState.pendingKey === "llm setup" ? "Saving..." : "Enable Gemini"}
+                </button>
+              </form>
+              ) : null}
+
+              {operationsView === "compute" ? (
               <form className="action-card" onSubmit={handleRunSubmit}>
                 <h3>Queue run</h3>
                 <p>Send a reproducible experiment to the worker queue instead of running it inline.</p>
@@ -3799,7 +5214,9 @@ export default function App() {
                   {actionState.pendingKey === "queue run" ? "Queueing..." : "Queue run"}
                 </button>
               </form>
+              ) : null}
 
+              {operationsView === "backlog" ? (
               <form className="action-card" onSubmit={handleTaskSubmit}>
                 <h3>Create task</h3>
                 <p>Push the next research step into the shared queue so it can be claimed and tracked.</p>
@@ -3847,7 +5264,9 @@ export default function App() {
                   {actionState.pendingKey === "task" ? "Saving..." : "Create task"}
                 </button>
               </form>
+              ) : null}
 
+              {operationsView === "theory" ? (
               <form className="action-card" onSubmit={handleClaimSubmit}>
                 <h3>Create claim</h3>
                 <p>Capture a mathematical statement as soon as it becomes concrete enough to track.</p>
@@ -3888,7 +5307,9 @@ export default function App() {
                   {actionState.pendingKey === "claim" ? "Saving..." : "Create claim"}
                 </button>
               </form>
+              ) : null}
 
+              {operationsView === "theory" ? (
               <form className="action-card" onSubmit={handleClaimRunLinkSubmit}>
                 <h3>Link claim to run</h3>
                 <p>Connect a mathematical statement to a specific run so the inspector can show why a claim is supported, tested, or refuted.</p>
@@ -3939,7 +5360,9 @@ export default function App() {
                   {actionState.pendingKey === "claim link" ? "Linking..." : "Save claim link"}
                 </button>
               </form>
+              ) : null}
 
+              {operationsView === "sources" ? (
               <form className="action-card" onSubmit={handleSourceSubmit}>
                 <h3>Register source</h3>
                 <p>Store an external proof attempt, blog post, paper, or forum thread before trusting or rejecting it.</p>
@@ -4067,7 +5490,160 @@ export default function App() {
                   {actionState.pendingKey === "source" ? "Saving..." : "Register source"}
                 </button>
               </form>
+              ) : null}
 
+              {operationsView === "checks" ? (
+              <article className="action-card">
+                <h3>Gemini autopilot</h3>
+                <p>Uses local lab history as memory and proposes bounded next steps. It can create real tasks, but it does not auto-promote claims or declare proofs.</p>
+                <div className="action-fields">
+                  <ActionField label="Mode" wide>
+                    <div className="review-card">
+                      <p className="meta-line">
+                        {state.llmStatus?.ready
+                          ? `Ready via ${state.llmStatus.model} | memory mode ${state.llmStatus.memory_mode || "local_history"}`
+                          : state.llmStatus?.note || "Gemini is not ready yet."}
+                      </p>
+                      <p className="meta-line">
+                        {state.autopilotStatus?.enabled
+                          ? `Background autopilot is enabled every ${state.autopilotStatus.interval_seconds || 1800}s.`
+                          : "Background autopilot is paused; manual runs still work."}
+                      </p>
+                      {state.autopilotStatus?.last_success_at ? (
+                        <p className="meta-line">
+                          Last success {formatTimestamp(state.autopilotStatus.last_success_at)}
+                          {state.autopilotStatus.last_applied_task_ids?.length > 0
+                            ? ` | created ${state.autopilotStatus.last_applied_task_ids.join(", ")}`
+                            : ""}
+                          {state.autopilotStatus.last_executed_task_ids?.length > 0
+                            ? ` | executed ${state.autopilotStatus.last_executed_task_ids.join(", ")}`
+                            : ""}
+                        </p>
+                      ) : null}
+                      {state.autopilotStatus?.last_generated_artifact_ids?.length > 0 ? (
+                        <p className="meta-line">
+                          Artifacts {state.autopilotStatus.last_generated_artifact_ids.join(", ")}
+                          {state.autopilotStatus.last_generated_run_ids?.length > 0
+                            ? ` | runs ${state.autopilotStatus.last_generated_run_ids.join(", ")}`
+                            : ""}
+                        </p>
+                      ) : null}
+                      {state.autopilotStatus?.last_error ? (
+                        <p className="meta-line">Last error: {state.autopilotStatus.last_error}</p>
+                      ) : null}
+                    </div>
+                  </ActionField>
+                  <ActionField label="Max tasks" wide>
+                    <input
+                      className="filter-input"
+                      type="number"
+                      min="1"
+                      max="5"
+                      value={quickForms.autopilotMaxTasks}
+                      onChange={(event) => updateQuickForm("autopilotMaxTasks", event.target.value)}
+                    />
+                  </ActionField>
+                  <ActionField label="Loop interval (seconds)" wide>
+                    <input
+                      className="filter-input"
+                      type="number"
+                      min="60"
+                      step="60"
+                      value={quickForms.autopilotInterval}
+                      onChange={(event) => updateQuickForm("autopilotInterval", event.target.value)}
+                    />
+                  </ActionField>
+                </div>
+                {autopilotResult ? (
+                  <div className="review-card">
+                    <div className="card-head">
+                      <strong>{autopilotResult.recommended_direction_slug || "No direction picked"}</strong>
+                      <span className="filter-count">{autopilotResult.model}</span>
+                    </div>
+                    <p>{autopilotResult.summary || "No summary returned."}</p>
+                    <p className="meta-line">{autopilotResult.recommended_direction_reason || "No rationale returned."}</p>
+                    {(autopilotResult.task_proposals || []).length > 0 ? (
+                      <div className="mini-stack">
+                        <strong>Proposed tasks, not runs</strong>
+                        <ul className="compact-list">
+                          {autopilotResult.task_proposals.map((item, index) => (
+                            <li key={`autopilot-task-${index}`}>
+                              {item.direction_slug}: {item.title}
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    ) : null}
+                    {autopilotResult.applied_task_ids?.length > 0 ? (
+                      <p className="meta-line">Created: {autopilotResult.applied_task_ids.join(", ")}</p>
+                    ) : null}
+                    {autopilotResult.executed_task_ids?.length > 0 ? (
+                      <p className="meta-line">Executed now: {autopilotResult.executed_task_ids.join(", ")}</p>
+                    ) : null}
+                    {autopilotResult.generated_artifact_ids?.length > 0 ? (
+                      <p className="meta-line">Artifacts: {autopilotResult.generated_artifact_ids.join(", ")}</p>
+                    ) : null}
+                    {autopilotResult.generated_run_ids?.length > 0 ? (
+                      <p className="meta-line">Runs: {autopilotResult.generated_run_ids.join(", ")}</p>
+                    ) : null}
+                    {autopilotResult.report_artifact_id ? (
+                      <div className="card-action-row">
+                        <p className="meta-line">Report: {autopilotResult.report_artifact_id}</p>
+                        <button
+                          className="secondary-button"
+                          type="button"
+                          onClick={() => {
+                            setActiveTab("evidence");
+                            setEvidenceView("inspector");
+                            openEvidence("artifact", autopilotResult.report_artifact_id);
+                          }}
+                        >
+                          Open report
+                        </button>
+                      </div>
+                    ) : null}
+                  </div>
+                ) : null}
+                <div className="action-button-row">
+                  <button
+                    className="secondary-button action-button"
+                    type="button"
+                    onClick={() => handleAutopilotConfig(!(state.autopilotStatus?.enabled))}
+                    disabled={!state.llmStatus?.ready || actionState.pendingKey === "enable autopilot" || actionState.pendingKey === "pause autopilot"}
+                  >
+                    {state.autopilotStatus?.enabled
+                      ? actionState.pendingKey === "pause autopilot"
+                        ? "Pausing..."
+                        : "Pause background loop"
+                      : actionState.pendingKey === "enable autopilot"
+                        ? "Enabling..."
+                        : "Enable background loop"}
+                  </button>
+                  <button
+                    className="secondary-button action-button"
+                    type="button"
+                    onClick={() => handleAutopilotRun(false)}
+                    disabled={
+                      !state.llmStatus?.ready ||
+                      actionState.pendingKey === "gemini autopilot" ||
+                      actionState.pendingKey === "gemini autopilot apply"
+                    }
+                  >
+                    {actionState.pendingKey === "gemini autopilot" ? "Planning..." : "Draft plan"}
+                  </button>
+                  <button
+                    className="secondary-button action-button"
+                    type="button"
+                    onClick={() => handleAutopilotRun(true)}
+                    disabled={!state.llmStatus?.ready || actionState.pendingKey === "gemini autopilot" || actionState.pendingKey === "gemini autopilot apply"}
+                  >
+                    {actionState.pendingKey === "gemini autopilot apply" ? "Applying..." : "Create tasks"}
+                  </button>
+                </div>
+              </article>
+              ) : null}
+
+              {operationsView === "checks" ? (
               <form className="action-card" onSubmit={handleReviewSubmit}>
                 <h3>Review direction</h3>
                 <p>Recompute the current score and status from the evidence already linked in the lab.</p>
@@ -4102,7 +5678,9 @@ export default function App() {
                   {actionState.pendingKey === "direction review" ? "Reviewing..." : "Review direction"}
                 </button>
               </form>
+              ) : null}
 
+              {operationsView === "sources" ? (
               <form className="action-card" onSubmit={handleSourceReviewSubmit}>
                 <h3>Review source</h3>
                 <p>Move a source from intake toward flagged, supported, or refuted only after an explicit rubric pass.</p>
@@ -4131,6 +5709,11 @@ export default function App() {
                       <p className="meta-line">
                         {prettyLabel(selectedReviewSource.source_type)} | {prettyLabel(selectedReviewSource.claim_type)} | {prettyLabel(selectedReviewSource.map_variant)}
                       </p>
+                      <p className="meta-line">
+                        {state.llmStatus?.ready
+                          ? `Gemini ready in ${state.llmStatus.safety_mode} mode via ${state.llmStatus.model}.`
+                          : state.llmStatus?.note || "Gemini draft review is unavailable until the local key is enabled."}
+                      </p>
                     </div>
                   ) : null}
                   <ActionField label="Status">
@@ -4158,6 +5741,14 @@ export default function App() {
                         </option>
                       ))}
                     </select>
+                  </ActionField>
+                  <ActionField label="Review summary" wide>
+                    <textarea
+                      className="filter-input filter-textarea"
+                      value={quickForms.sourceReviewSummary}
+                      onChange={(event) => updateQuickForm("sourceReviewSummary", event.target.value)}
+                      placeholder="One short paragraph on what this source actually contributes, and what it fails to prove."
+                    />
                   </ActionField>
                   <ActionField label="Fallacy tags">
                     <input
@@ -4237,11 +5828,83 @@ export default function App() {
                     </p>
                   </div>
                 ) : null}
-                <button className="secondary-button action-button" type="submit" disabled={actionState.pendingKey === "source review"}>
-                  {actionState.pendingKey === "source review" ? "Saving..." : "Review source"}
-                </button>
+                {llmDraft ? (
+                  <div className="review-card">
+                    <div className="card-head">
+                      <strong>Gemini draft</strong>
+                      <span className="filter-count">{llmDraft.model}</span>
+                    </div>
+                    <p>{llmDraft.summary || "Gemini returned a draft without a summary."}</p>
+                    <p className="meta-line">
+                      {llmDraft.review_status} | {llmDraft.map_variant} | {(llmDraft.fallacy_tags || []).length} tags
+                    </p>
+                    {(llmDraft.candidate_claims || []).length > 0 ? (
+                      <div className="mini-stack">
+                        <strong>Candidate claims</strong>
+                        <ul className="compact-list">
+                          {llmDraft.candidate_claims.map((item, index) => (
+                            <li key={`draft-claim-${index}`}>{item}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    ) : null}
+                    {(llmDraft.deterministic_checks || []).length > 0 ? (
+                      <div className="mini-stack">
+                        <strong>Deterministic checks</strong>
+                        <ul className="compact-list">
+                          {llmDraft.deterministic_checks.map((item, index) => (
+                            <li key={`draft-check-${index}`}>{item}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    ) : null}
+                    {(llmDraft.warnings || []).length > 0 ? (
+                      <p className="meta-line">{llmDraft.warnings.join(" | ")}</p>
+                    ) : null}
+                  </div>
+                ) : null}
+                <div className="action-button-row">
+                  <button
+                    className="secondary-button action-button"
+                    type="button"
+                    onClick={handleSourceDraftRequest}
+                    disabled={!quickForms.sourceReviewId || !state.llmStatus?.ready || actionState.pendingKey === "llm review draft"}
+                  >
+                    {actionState.pendingKey === "llm review draft" ? "Drafting..." : "Ask Gemini for draft"}
+                  </button>
+                  <button className="secondary-button action-button" type="submit" disabled={actionState.pendingKey === "source review"}>
+                    {actionState.pendingKey === "source review" ? "Saving..." : "Review source"}
+                  </button>
+                </div>
+                <div className="review-card">
+                  <div className="card-head">
+                    <strong>Review history</strong>
+                    <span className="filter-count">{sourceReviewHistory.length}</span>
+                  </div>
+                  {sourceReviewHistory.length === 0 ? (
+                    <p className="meta-line">No source review events recorded yet.</p>
+                  ) : (
+                    <div className="review-history-list">
+                      {sourceReviewHistory.slice(0, 6).map((eventItem) => (
+                        <article key={eventItem.id} className="review-history-item">
+                          <div className="card-head">
+                            <strong>{prettyLabel(eventItem.mode)}</strong>
+                            <span className="filter-count">{formatTimestamp(eventItem.created_at)}</span>
+                          </div>
+                          <p>{eventItem.summary || eventItem.notes || "No summary stored."}</p>
+                          <p className="meta-line">
+                            {eventItem.review_status || "no status"} | {eventItem.reviewer || "reviewer unknown"}
+                            {eventItem.llm_provider ? ` | ${eventItem.llm_provider}/${eventItem.llm_model}` : ""}
+                          </p>
+                        </article>
+                      ))}
+                    </div>
+                  )}
+                </div>
               </form>
+              ) : null}
 
+              {operationsView === "checks" ? (
               <form className="action-card" onSubmit={handleProbeSubmit}>
                 <h3>Run modular probe</h3>
                 <p>Quickly falsify residue-class claims before they contaminate a proof attempt.</p>
@@ -4294,8 +5957,10 @@ export default function App() {
                   {actionState.pendingKey === "modular probe" ? "Probing..." : "Run probe"}
                 </button>
               </form>
+              ) : null}
             </div>
           </article>
+          {operationsView === "backlog" ? (
           <SectionIntro
             title="What should happen next"
             text="Use this part of the dashboard when you want to know the next human-scale research actions."
@@ -4308,6 +5973,8 @@ export default function App() {
               />
             }
           />
+          ) : null}
+          {operationsView === "compute" ? (
           <article className="panel subpanel">
             <SectionIntro
               title="Worker dispatch"
@@ -4339,6 +6006,9 @@ export default function App() {
               </div>
             )}
           </article>
+          ) : null}
+          {operationsView === "backlog" ? (
+          <>
           <article className="panel subpanel">
             <SectionIntro
               title="Task filters"
@@ -4403,6 +6073,8 @@ export default function App() {
               ))}
             </div>
           )}
+          </>
+          ) : null}
         </section>
         ) : null}
 
@@ -4410,105 +6082,252 @@ export default function App() {
         <section className="tab-panel">
           <SectionIntro
             title="Guide"
-            text="This page explains what each role does and how results should move through the lab."
+            text="This page explains what each area means, what Gemini does, and how results should move through the lab."
           />
-          <div className="guide-grid">
-            <article className="panel">
-              <h3>Agent workflow</h3>
-              <p className="guide-lead">
-                Each role is intentionally small. The important part is the chain from idea to evidence to review, not the number of boxes on screen.
-              </p>
-              <ol className="timeline">
-                <li>
-                  <strong>compute-agent</strong>
-                  <p>Runs interval sweeps, saves metrics, and produces reproducible artifacts.</p>
-                </li>
-                <li>
-                  <strong>theory-agent</strong>
-                  <p>Proposes claims, filters, inverse-tree ideas, and candidate invariants.</p>
-                </li>
-                <li>
-                  <strong>validator-agent</strong>
-                  <p>Replays results with independent logic before a direction or claim is promoted.</p>
-                </li>
-                <li>
-                  <strong>integrator</strong>
-                  <p>Reviews evidence, links runs to claims, and decides whether work stays active, promising, frozen, or refuted.</p>
-                </li>
-              </ol>
-              <div className="workflow-footer">
-                <span>Promotion rule</span>
-                <p>Nothing moves to `main` without a generated report and a validation path.</p>
-              </div>
-            </article>
-
-            <article className="panel">
-              <h3>What to do next</h3>
-              <div className="stack-list compact-stack">
-                <article className="list-card">
-                  <strong>1. Start in Overview</strong>
-                  <p>Check validated runs, supported claims, and direction status.</p>
-                </article>
-                <article className="list-card">
-                  <strong>2. Open Evidence</strong>
-                  <p>Inspect actual run summaries and artifact links before trusting a pattern.</p>
-                </article>
-                <article className="list-card">
-                  <strong>3. Open Queue</strong>
-                  <p>Pick the next task only after you understand the current evidence.</p>
-                </article>
-                <article className="list-card">
-                  <strong>4. Read the roadmap</strong>
-                  <p>The phase plan is stored in <code>research/ROADMAP.md</code>.</p>
-                </article>
-              </div>
-            </article>
-
-            <article className="panel">
-              <h3>Source review rubric</h3>
-              <div className="stack-list compact-stack">
-                <article className="list-card">
-                  <strong>1. Classify the source</strong>
-                  <p>Mark it as peer-reviewed, preprint, self-published, forum, blog, Q&A, or news.</p>
-                </article>
-                <article className="list-card">
-                  <strong>2. Separate proof from evidence</strong>
-                  <p>Computational checks and almost-all results never count as a full proof on their own.</p>
-                </article>
-                <article className="list-card">
-                  <strong>3. Require map discipline</strong>
-                  <p>Any source that blurs standard, shortcut, and odd-only variants should be flagged.</p>
-                </article>
-                <article className="list-card">
-                  <strong>4. Falsify local lemmas first</strong>
-                  <p>Run modular probes before spending serious attention on a proof attempt.</p>
-                </article>
-              </div>
-            </article>
-
-            <article className="panel">
-              <h3>Consensus baseline</h3>
-              {state.baseline ? (
+          <SectionSubnav
+            label="Guide views"
+            items={guideViews}
+            activeId={guideView}
+            onChange={setGuideView}
+          />
+          {guideView === "start" ? (
+            <div className="guide-grid">
+              <article className="panel">
+                <h3>What each area means</h3>
                 <div className="stack-list compact-stack">
                   <article className="list-card">
-                    <strong>{prettyLabel(state.baseline.problem_status)}</strong>
-                    <p>{state.baseline.note}</p>
+                    <strong>Start Here</strong>
+                    <p>High-level state: what is active, what is validated, and what the lab thinks is worth reading first.</p>
                   </article>
-                  {state.baseline.items.map((item) => (
-                    <article key={item.title} className="list-card">
-                      <strong>{item.title}</strong>
-                      <p>{item.detail}</p>
-                    </article>
-                  ))}
+                  <article className="list-card">
+                    <strong>Live Math</strong>
+                    <p>Only compute runs appear here. If Gemini creates task IDs above the last run, that does not mean runs are missing.</p>
+                  </article>
+                  <article className="list-card">
+                    <strong>Tracks</strong>
+                    <p>Research lanes: verification, inverse-tree/parity structure, and lemma workspace.</p>
+                  </article>
+                  <article className="list-card">
+                    <strong>Evidence and Operations</strong>
+                    <p>Evidence explains what already exists; Operations is where new runs, claims, reviews, and autopilot tasks are created.</p>
+                  </article>
                 </div>
-              ) : (
-                <EmptyState title="No baseline payload" text="The API baseline endpoint has not responded yet." />
-              )}
-            </article>
-          </div>
+              </article>
+              <article className="panel">
+                <h3>How to read lab IDs</h3>
+                <p className="guide-lead">
+                  `COL-####` is a single lab-wide sequence, not a per-table counter.
+                </p>
+                <div className="stack-list compact-stack">
+                  <article className="list-card">
+                    <strong>Runs</strong>
+                    <p>Compute jobs visible in Live Math and Run navigator. The latest saved run is {latestRunId}.</p>
+                  </article>
+                  <article className="list-card">
+                    <strong>Tasks</strong>
+                    <p>Work items created by humans or Gemini. These continue the same ID sequence and live in Operations / backlog.</p>
+                  </article>
+                  <article className="list-card">
+                    <strong>Artifacts</strong>
+                    <p>Files such as reports, JSON, or notes. A Gemini report can be COL-0104 even if no newer run exists.</p>
+                  </article>
+                </div>
+              </article>
+            </div>
+          ) : guideView === "roles" ? (
+            <div className="guide-grid">
+              <article className="panel">
+                <h3>Agent workflow</h3>
+                <p className="guide-lead">
+                  The chain from idea to evidence to review matters more than how many roles exist.
+                </p>
+                <ol className="timeline">
+                  <li>
+                    <strong>compute-agent</strong>
+                    <p>Runs interval sweeps, saves metrics, and produces reproducible artifacts.</p>
+                  </li>
+                  <li>
+                    <strong>theory-agent</strong>
+                    <p>Proposes claims, filters, inverse-tree ideas, and candidate invariants.</p>
+                  </li>
+                  <li>
+                    <strong>validator-agent</strong>
+                    <p>Replays results with independent logic before a direction or claim is promoted.</p>
+                  </li>
+                  <li>
+                    <strong>integrator</strong>
+                    <p>Reviews evidence, links runs to claims, and decides whether work stays active, promising, frozen, or refuted.</p>
+                  </li>
+                </ol>
+              </article>
+              <article className="panel">
+                <h3>Practical reading order</h3>
+                <div className="stack-list compact-stack">
+                  <article className="list-card">
+                    <strong>1. Start Here</strong>
+                    <p>Check validated runs, supported claims, and direction status.</p>
+                  </article>
+                  <article className="list-card">
+                    <strong>2. Evidence</strong>
+                    <p>Inspect actual run summaries and artifact links before trusting a pattern.</p>
+                  </article>
+                  <article className="list-card">
+                    <strong>3. Tracks</strong>
+                    <p>Check which lane owns the question you care about and what the next task is.</p>
+                  </article>
+                  <article className="list-card">
+                    <strong>4. Operations</strong>
+                    <p>Create new runs, claims, reviews, or Gemini tasks only after you understand the current evidence.</p>
+                  </article>
+                </div>
+              </article>
+            </div>
+          ) : guideView === "validation" ? (
+            <div className="guide-grid">
+              <article className="panel">
+                <h3>What validation means here</h3>
+                <div className="stack-list compact-stack">
+                  <article className="list-card">
+                    <strong>Validated result</strong>
+                    <p>An independent replay matched the stored aggregates. That is stronger computational evidence, not a proof.</p>
+                  </article>
+                  <article className="list-card">
+                    <strong>Claim</strong>
+                    <p>A mathematical statement waiting for support or refutation.</p>
+                  </article>
+                  <article className="list-card">
+                    <strong>Artifact</strong>
+                    <p>A saved file. A report can explain a plan without proving or computing anything by itself.</p>
+                  </article>
+                  <article className="list-card">
+                    <strong>Raw run</strong>
+                    <p>A compute record before independent replay finishes.</p>
+                  </article>
+                </div>
+              </article>
+              <article className="panel">
+                <h3>Source review rubric</h3>
+                <div className="stack-list compact-stack">
+                  <article className="list-card">
+                    <strong>1. Classify the source</strong>
+                    <p>Mark it as peer-reviewed, preprint, self-published, forum, blog, Q&A, or news.</p>
+                  </article>
+                  <article className="list-card">
+                    <strong>2. Separate proof from evidence</strong>
+                    <p>Computational checks and almost-all results never count as a full proof on their own.</p>
+                  </article>
+                  <article className="list-card">
+                    <strong>3. Require map discipline</strong>
+                    <p>Any source that blurs standard, shortcut, and odd-only variants should be flagged.</p>
+                  </article>
+                  <article className="list-card">
+                    <strong>4. Falsify local lemmas first</strong>
+                    <p>Run modular probes before spending serious attention on a proof attempt.</p>
+                  </article>
+                </div>
+              </article>
+              <article className="panel">
+                <h3>Consensus baseline</h3>
+                {state.baseline ? (
+                  <div className="stack-list compact-stack">
+                    <article className="list-card">
+                      <strong>{prettyLabel(state.baseline.problem_status)}</strong>
+                      <p>{state.baseline.note}</p>
+                    </article>
+                    {state.baseline.items.map((item) => (
+                      <article key={item.title} className="list-card">
+                        <strong>{item.title}</strong>
+                        <p>{item.detail}</p>
+                      </article>
+                    ))}
+                  </div>
+                ) : (
+                  <EmptyState title="No baseline payload" text="The API baseline endpoint has not responded yet." />
+                )}
+              </article>
+            </div>
+          ) : (
+            <div className="guide-grid">
+              <article className="panel">
+                <h3>How Gemini is used safely</h3>
+                <div className="stack-list compact-stack">
+                  <article className="list-card">
+                    <strong>What it can do</strong>
+                    <p>Draft source reviews, summarize local history, propose bounded tasks, and recommend a direction to inspect next.</p>
+                  </article>
+                  <article className="list-card">
+                    <strong>What it cannot do</strong>
+                    <p>It does not auto-promote claims, does not replace validation, and does not create proof truth by itself.</p>
+                  </article>
+                  <article className="list-card">
+                    <strong>Where its output appears</strong>
+                    <p>New tasks show up in Operations / backlog. Planning reports show up in Evidence as artifacts. They do not appear as new compute runs.</p>
+                  </article>
+                </div>
+              </article>
+              <article className="panel">
+                <h3>Current Gemini status</h3>
+                <div className="stack-list compact-stack">
+                  <article className="list-card">
+                    <strong>Provider</strong>
+                    <p>
+                      {state.llmStatus?.ready
+                        ? `${state.llmStatus.model} is ready with local memory mode ${state.llmStatus.memory_mode || "local_history"}.`
+                        : state.llmStatus?.note || "Gemini is not ready yet."}
+                    </p>
+                  </article>
+                  <article className="list-card">
+                    <strong>Background loop</strong>
+                    <p>
+                      {state.autopilotStatus?.enabled
+                        ? `Enabled every ${state.autopilotStatus.interval_seconds || 1800}s. Last success ${formatTimestamp(state.autopilotStatus.last_success_at)}.`
+                        : "Paused. Manual draft/apply runs still work from Operations."}
+                    </p>
+                  </article>
+                  <article className="list-card">
+                    <strong>Latest applied tasks</strong>
+                    <p>
+                      {state.autopilotStatus?.last_applied_task_ids?.length
+                        ? state.autopilotStatus.last_applied_task_ids.join(", ")
+                        : "No applied tasks recorded yet."}
+                    </p>
+                  </article>
+                </div>
+              </article>
+            </div>
+          )}
         </section>
         ) : null}
         </div>
+        <footer className="site-footer">
+          <div className="legal-row">
+            <a href="https://github.com/cosmintrica/CollatzLab" target="_blank" rel="noreferrer">GitHub</a>
+            <span className="legal-separator">•</span>
+            <a href="https://github.com/cosmintrica/CollatzLab/blob/main/LICENSE" target="_blank" rel="noreferrer">Apache 2.0</a>
+            <span className="legal-separator">•</span>
+            <a
+              href="https://revolut.me/mtvtrk"
+              target="_blank"
+              rel="noreferrer"
+              title="Optional support. Helps with development time and Gemini API costs."
+              aria-label="Donate. Optional support for development and Gemini API costs."
+            >
+              Donate
+            </a>
+          </div>
+          <div className="legal-row">
+            <span>Copyright (c) 2026 Cosmin Trica</span>
+          </div>
+        </footer>
+        <ComputeBudgetRail
+          computeProfile={computeProfile}
+          quickForms={quickForms}
+          updateQuickForm={updateQuickForm}
+          handleSubmit={handleComputeProfileSubmit}
+          actionState={actionState}
+          effectiveCpuBudget={effectiveCpuBudget}
+          effectiveGpuBudget={effectiveGpuBudget}
+        />
         <RedditIntelRail
           feed={state.redditFeed}
           onImportPost={handleRedditImport}

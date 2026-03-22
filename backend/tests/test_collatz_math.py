@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import pytest
+
 from collatz_lab.services import (
+    COLLATZ_INT64_ODD_STEP_LIMIT,
     accelerated_odd_step,
     collatz_step,
     compute_range_metrics,
@@ -35,3 +38,12 @@ def test_cpu_parallel_kernel_matches_direct_interval_aggregate():
     assert parallel.max_total_stopping_time == direct.max_total_stopping_time
     assert parallel.max_stopping_time == direct.max_stopping_time
     assert parallel.max_excursion == direct.max_excursion
+
+
+def test_cpu_parallel_recovers_overflow_via_bigint_fallback():
+    overflow_seed = COLLATZ_INT64_ODD_STEP_LIMIT + 1
+    result = compute_range_metrics(overflow_seed, overflow_seed, kernel="cpu-parallel")
+    direct = metrics_accelerated(overflow_seed)
+    assert result.processed == 1
+    assert result.max_total_stopping_time["value"] == direct.total_stopping_time
+    assert result.max_stopping_time["value"] == direct.stopping_time

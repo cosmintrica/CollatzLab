@@ -13,9 +13,14 @@ Set-Location $root
 $env:COLLATZ_LAB_ROOT = $root.Path
 $env:COLLATZ_LAB_WORKER_NAME = $Name
 $env:COLLATZ_LAB_WORKER_HARDWARE = $Hardware
-$env:COLLATZ_CPU_PARALLEL_BATCH_SIZE = "2000000"
-$env:COLLATZ_GPU_BATCH_SIZE = "10000000"
+# Batch sizes control how much work the kernel does between checkpoints.
+# Larger batches = higher hardware utilization (less checkpoint I/O overhead).
+# RTX 4060 Ti can process ~500M seeds/checkpoint comfortably.
+$env:COLLATZ_CPU_PARALLEL_BATCH_SIZE = "250000000"
+$env:COLLATZ_CPU_PARALLEL_ODD_BATCH_SIZE = "500000000"
+$env:COLLATZ_GPU_BATCH_SIZE = "500000000"
 $env:COLLATZ_GPU_THREADS_PER_BLOCK = "256"
+$env:NUMBA_NUM_THREADS = [string]([Environment]::ProcessorCount)
 
 $backendSrc = Join-Path $root "backend\src"
 if ($env:PYTHONPATH) {

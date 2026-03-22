@@ -4,6 +4,7 @@ from fastapi.testclient import TestClient
 
 from collatz_lab.api import create_app
 from collatz_lab.config import Settings
+from collatz_lab.schemas import LLMAutopilotRun, LLMReviewDraft
 
 
 def test_api_summary_and_run_flow(settings: Settings):
@@ -12,7 +13,7 @@ def test_api_summary_and_run_flow(settings: Settings):
 
     summary = client.get("/api/summary")
     assert summary.status_code == 200
-    assert summary.json()["direction_count"] == 3
+    assert summary.json()["direction_count"] == 5
 
     run_response = client.post(
         "/api/runs",
@@ -158,6 +159,12 @@ def test_api_source_registry_and_consensus_probe(settings: Settings):
     assert review_response.status_code == 200
     assert review_response.json()["review_status"] == "flagged"
 
+    history = client.get(f"/api/sources/{source_payload['id']}/reviews")
+    assert history.status_code == 200
+    assert len(history.json()) == 2
+    assert history.json()[0]["mode"] == "manual"
+    assert history.json()[1]["mode"] == "intake"
+
     baseline = client.get("/api/consensus-baseline")
     assert baseline.status_code == 200
     assert baseline.json()["problem_status"] == "open"
@@ -226,3 +233,163 @@ def test_api_reddit_feed(settings: Settings, monkeypatch):
     payload = response.json()
     assert payload["review_candidate_count"] == 1
     assert payload["posts"][0]["signal"] == "review"
+
+
+def test_api_source_review_draft(settings: Settings, monkeypatch):
+    app = create_app(settings)
+    client = TestClient(app)
+
+    source_response = client.post(
+        "/api/sources",
+        json={
+            "direction_slug": "lemma-workspace",
+            "title": "Review me",
+            "summary": "Claims a broad structural proof.",
+        },
+    )
+    source_id = source_response.json()["id"]
+
+    def fake_draft(*, source, baseline, allowed_tags):
+        assert source.id == source_id
+        assert baseline.problem_status == "open"
+        assert "unchecked-generalization" in allowed_tags
+        return LLMReviewDraft.model_validate(
+            {
+                "source_id": source_id,
+                "provider": "gemini",
+                "model": "gemini-2.5-pro",
+                "safety_mode": "review_only",
+                "created_at": "2026-03-22T00:00:00+00:00",
+                "review_status": "flagged",
+                "map_variant": "standard",
+                "summary": "Draft review summary.",
+                "notes": "Draft notes.",
+                "fallacy_tags": ["unchecked-generalization"],
+                "rubric": {
+                    "peer_reviewed": False,
+                    "acknowledged_errors": True,
+                    "defines_map_variant": True,
+                    "distinguishes_empirical_from_proof": False,
+                    "proves_descent": False,
+                    "proves_cycle_exclusion": False,
+                    "uses_statistical_argument": False,
+                    "validation_backed": False,
+                    "notes": "Needs a universal step.",
+                },
+                "candidate_claims": ["Test a narrower residue filter."],
+                "deterministic_checks": ["Run a modular probe mod 8."],
+                "warnings": ["LLM output is advisory only."],
+                "raw_text": "{\"summary\":\"Draft review summary.\"}",
+            }
+        )
+
+    monkeypatch.setattr("collatz_lab.api.generate_source_review_draft", fake_draft)
+
+    response = client.post(f"/api/sources/{source_id}/review-draft")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["provider"] == "gemini"
+    assert payload["review_status"] == "flagged"
+    assert payload["candidate_claims"] == ["Test a narrower residue filter."]
+
+    history = client.get(f"/api/sources/{source_id}/reviews")
+    assert history.status_code == 200
+    assert history.json()[0]["mode"] == "llm_suggestion"
+    assert history.json()[0]["llm_provider"] == "gemini"
+
+
+def test_api_llm_setup_persists_env(settings: Settings):
+    app = create_app(settings)
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/llm/setup",
+        json={
+            "api_key": "new-key",
+            "enabled": True,
+            "model": "gemini-2.5-flash",
+        },
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ready"] is True
+    assert payload["has_api_key"] is True
+
+    env_text = (settings.workspace_root / ".env").read_text(encoding="utf-8")
+    assert "GEMINI_API_KEY=new-key" in env_text
+
+
+def test_api_llm_autopilot_config_persists_env(settings: Settings):
+    app = create_app(settings)
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/llm/autopilot/config",
+        json={
+            "enabled": True,
+            "interval_seconds": 600,
+            "max_tasks": 4,
+        },
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["enabled"] is True
+    assert payload["interval_seconds"] == 600
+    assert payload["max_tasks"] == 4
+
+    status = client.get("/api/llm/autopilot/status")
+    assert status.status_code == 200
+    assert status.json()["enabled"] is True
+
+    env_text = (settings.workspace_root / ".env").read_text(encoding="utf-8")
+    assert "COLLATZ_LLM_AUTOPILOT_ENABLED=1" in env_text
+    assert "COLLATZ_LLM_AUTOPILOT_INTERVAL_SECONDS=600" in env_text
+    assert "COLLATZ_LLM_AUTOPILOT_MAX_TASKS=4" in env_text
+
+
+def test_api_llm_autopilot_run(settings: Settings, monkeypatch):
+    app = create_app(settings)
+    client = TestClient(app)
+
+    def fake_cycle(repository, *, max_tasks, apply, mode):
+        assert repository.consensus_baseline().problem_status == "open"
+        assert max_tasks == 2
+        assert apply is True
+        assert mode == "manual"
+        return LLMAutopilotRun.model_validate(
+            {
+                "provider": "gemini",
+                "model": "gemini-2.5-flash",
+                "safety_mode": "review_only",
+                "created_at": "2026-03-22T00:00:00+00:00",
+                "mode": "manual",
+                "summary": "Focus on structure before more brute force.",
+                "recommended_direction_slug": "inverse-tree-parity",
+                "recommended_direction_reason": "This is the best next bounded path.",
+                "memory_mode": "local_history",
+                "notes": ["Use current lab state as memory."],
+                "task_proposals": [
+                    {
+                        "direction_slug": "inverse-tree-parity",
+                        "title": "Explore odd predecessor classes mod 16",
+                        "kind": "structure",
+                        "description": "Check whether odd predecessor branching collapses in specific residue classes.",
+                        "priority": 1,
+                    }
+                    ],
+                    "applied": True,
+                    "applied_task_ids": ["COL-0999"],
+                "report_artifact_id": "COL-1000",
+                "report_artifact_path": "reports/gemini-autopilot-test.md",
+            }
+        )
+
+    monkeypatch.setattr("collatz_lab.api.run_autopilot_cycle", fake_cycle)
+
+    response = client.post("/api/llm/autopilot/run", json={"apply": True, "max_tasks": 2})
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["recommended_direction_slug"] == "inverse-tree-parity"
+    assert payload["applied"] is True
+    assert len(payload["applied_task_ids"]) == 1
+    assert payload["report_artifact_id"] == "COL-1000"
