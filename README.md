@@ -215,6 +215,7 @@ The higher-level plan lives in:
 
 - [`research/ROADMAP.md`](./research/ROADMAP.md)
 - [`research/DEVELOPMENT_BACKLOG.md`](./research/DEVELOPMENT_BACKLOG.md)
+- [`research/HARDWARE_AND_KERNELS.md`](./research/HARDWARE_AND_KERNELS.md) — target CPUs/GPUs (x86_64, ARM64, Apple Silicon, WoA, CUDA/Metal/ROCm, etc.) and phased kernel portability
 - [`research/WORKER_QUEUE.md`](./research/WORKER_QUEUE.md)
 - [`research/FEDERATED_LAB.md`](./research/FEDERATED_LAB.md)
 

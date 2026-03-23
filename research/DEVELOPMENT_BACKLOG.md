@@ -14,7 +14,7 @@ Rules:
 
 0. Immediate next after hosting pass
 - keep continuous chained runs alive longer so `LIVE NOW` stays visible more often;
-- refactor `hardware.py` into platform adapters for Windows/Linux/macOS and x86_64/ARM64;
+- refactor `hardware.py` into platform adapters for Windows/Linux/macOS and x86_64/ARM64 (see [`HARDWARE_AND_KERNELS.md`](./HARDWARE_AND_KERNELS.md) for the full platform matrix and phased plan);
 - sketch a distributed coordinator backend so remote workers can contribute compute and centralize evidence.
 
 1. Worker queue and hardware-aware execution
@@ -58,11 +58,12 @@ Rules:
 - preserve a separate Vite mode for development.
 
 8. Cross-platform execution and hardware detection
+- **Canonical plan:** [`HARDWARE_AND_KERNELS.md`](./HARDWARE_AND_KERNELS.md) — CPUs (x86_64 Intel/AMD, Apple Silicon, Windows ARM e.g. Snapdragon X, Linux ARM64), GPUs (NVIDIA CUDA today; AMD ROCm, Intel oneAPI/SYCL, Apple Metal, Qualcomm Adreno as future research), integrated vs dedicated, macOS/Windows/Linux matrix.
 - split hardware discovery into backend adapters for Windows, Linux, and macOS;
 - support CPU-first execution everywhere, with GPU backends added per platform rather than hardcoding NVIDIA/Windows assumptions;
-- detect architecture and runtime backend explicitly: x86_64 vs ARM64, NVIDIA CUDA vs Apple Metal vs CPU-only;
-- keep a portable fallback path so Mac or ARM users can still run real experiments even without GPU kernels.
-- make local kernel selection automatic based on detected hardware class, runtime readiness, and validation safety.
+- detect architecture and runtime backend explicitly: x86_64 vs ARM64, NVIDIA CUDA vs Apple Metal vs CPU-only (extend enum as new backends land);
+- keep a portable fallback path so Mac or ARM users can still run real experiments even without GPU kernels;
+- make local kernel selection automatic based on detected hardware class, runtime readiness, and validation safety (Phase C in HARDWARE_AND_KERNELS).
 
 9. Federated / distributed lab mode
 - design a central coordinator that can assign bounded run shards to remote workers;

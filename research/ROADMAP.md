@@ -80,13 +80,14 @@ Work items:
 - 4 configurable kernels (see below);
 - larger interval batches (250M CPU, 500M GPU) and record tracking.
 
-2. GPU worker — **implemented**
+2. GPU worker — **implemented** (NVIDIA CUDA); **portability — planned**
 - separate managed worker process, not mixed into the API server;
 - same run metadata shape as CPU runs;
 - GPU kernel with CUDA shared-memory block reduction;
 - int64 overflow guard with automatic bigint fallback to cpu-parallel;
 - replay on small ranges against CPU before trusting larger sweeps.
-- platform: currently NVIDIA CUDA (Windows); Metal/cross-platform planned.
+- **Platforms today:** primarily NVIDIA CUDA on Windows/Linux x86_64 where Numba sees a driver.
+- **Roadmap (gradual):** see [`research/HARDWARE_AND_KERNELS.md`](./HARDWARE_AND_KERNELS.md) — Apple Silicon (Metal family), Windows on ARM, Linux ARM64, AMD ROCm, Intel GPU stacks, integrated vs dedicated detection; CPU kernels remain the universal baseline.
 
 ### Kernel reference
 
