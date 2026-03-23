@@ -15,19 +15,39 @@ The goal is to support several research activities in one place:
 - recording claims, links, artifacts, and reports;
 - reviewing external proof attempts and tagging common failure modes;
 - exploring non-brute-force directions alongside verification;
-- visualizing live checkpoints and derived formulas from real runs.
+- visualizing live checkpoints, orbit math, and derived formulas from real runs.
 
 ## Current capabilities
 
-- Python backend for orchestration, persistence, validation, and reports
-- FastAPI API for local automation and dashboard access
-- React/Vite dashboard with live math, evidence views, queue operations, and source review
-- SQLite-backed local state for runs, claims, artifacts, workers, and sources
-- CPU worker loop and GPU worker path with resumable checkpoints
-- source intake workflow, consensus baseline, and fallacy tagging
-- source review history plus Gemini-assisted draft reviews in guarded `review_only` mode
-- guarded Gemini autopilot that turns local lab history into bounded task proposals and optional background task creation
-- Reddit intake rail for watching new `r/Collatz` threads without treating them as truth
+**Backend**
+
+- Python 3.13 package: orchestration, SQLite persistence, validation, reports, Reddit feed helpers, hypothesis utilities
+- FastAPI API for the dashboard and local automation (`collatz-lab-api` / `uvicorn`)
+- CLI (`python -m collatz_lab.cli` or `lab`) for tasks, runs, claims, workers, reports
+- Resumable worker loop (CPU and GPU), checkpointed execution, optional validate-after-run
+- **Compute profile** persisted in the DB: system / CPU / GPU lane percentages, continuous compute on/off; workers apply batch sizing, thread counts, GPU throttling, and idle pacing so the budget is visible in practice
+- **Logging:** Numba/CUDA driver memory chatter is suppressed in workers; `/api/logs` aggregates `data/logs/worker-*.log` and filters legacy noise unless you search for it
+
+**Dashboard** (React 19 + Vite 7)
+
+- Tabbed workspace: overview, evidence, operations (compute, tracks, guide), live math, paper view, and related flows
+- **Light / dark theme** (manual toggle, persisted); favicon and app mark switch with the theme
+- **Compute budget** rail: start/stop continuous compute, sliders for whole-system / CPU / GPU lanes, apply to backend profile
+- **Active runs** strip with progress, throughput hints, and checkpoint status
+- **System logs** panel: search, level/source filters, refresh (worker log tail + failed-run summaries)
+- **Run rail**, **Reddit intel rail** (r/Collatz intake, not auto-trusted), **live math** navigator / ticker / orbit UI, **research paper** page (KaTeX, `research/paper.json`)
+- Configurable API base via `VITE_API_BASE_URL` for hosted frontends
+
+**Data & research**
+
+- SQLite under `data/` for runs, workers, claims, sources, compute profile, runtime settings
+- `research/`: roadmap, claim markdown files, paper metadata, incident/LLM notes as applicable
+- Generated outputs: `artifacts/`, `reports/` (gitignored by default for local runs)
+
+**Tooling**
+
+- GitHub Actions CI on `main`: backend `pytest`, dashboard `npm ci` + `npm run build`
+- Root `package.json` scripts for the dev stack (PowerShell on Windows); `scripts/*.sh` for backend, dashboard, and worker on Unix-like systems
 
 ## Research stance
 
@@ -42,33 +62,41 @@ This repo treats the problem conservatively:
 
 ## Repository layout
 
-- `backend/`: Python package, CLI, API, services, worker loop, and tests
-- `dashboard/`: local web UI built with React and Vite
-- `research/`: roadmap, direction notes, and claim documents
+- `backend/`: Python package, CLI, API, services, worker loop, tests
+- `dashboard/`: Vite + React UI (`npm` lifecycle inside this folder)
+- `research/`: roadmap, direction notes, claim documents, paper JSON
 - `artifacts/`: generated JSON, Markdown, and evidence outputs
 - `reports/`: generated lab reports
-- `data/`: SQLite database and runtime state
-- `scripts/`: local stack and worker startup scripts
+- `data/`: SQLite database and runtime state (local)
+- `scripts/`: dev stack (PowerShell), plus optional shell helpers for API / Vite / workers
 
 ## Quickstart
 
-1. Install backend dependencies:
+1. **Python:** 3.13+ recommended (matches `pyproject.toml` and CI).
+
+2. Install backend dependencies:
 
    ```powershell
    pip install -e .\backend[dev]
    ```
 
-2. Install dashboard dependencies:
+   Optional CUDA wheels for GPU workers (environment-specific; see Numba/CUDA docs for your GPU):
+
+   ```powershell
+   pip install -e ".\backend[dev,gpu]"
+   ```
+
+3. Install dashboard dependencies:
 
    ```powershell
    npm install --prefix .\dashboard
    ```
 
-3. Configure local environment if needed:
+4. Configure local environment if needed:
 
    - edit `.env`
    - or copy `.env.example` to `.env`
-   - if no Gemini key is detected, the dashboard prompts for it automatically and stores it in the local `.env`
+   - if no Gemini key is detected, the dashboard can prompt for it and store it in the local `.env`
 
    Example Gemini setup:
 
@@ -81,22 +109,22 @@ This repo treats the problem conservatively:
    COLLATZ_LLM_AUTOPILOT_MAX_TASKS=3
    ```
 
-4. Initialize the workspace:
+5. Initialize the workspace:
 
    ```powershell
    python -m collatz_lab.cli init
    ```
 
-5. Start the managed local stack:
+6. Start the managed local stack (API + Vite + optional worker):
 
    ```powershell
    npm run stack:start:worker
    ```
 
-6. Open:
+7. Open:
 
-- dashboard: `http://localhost:5173`
-- API health: `http://127.0.0.1:8000/health`
+   - dashboard: `http://localhost:5173`
+   - API health: `http://127.0.0.1:8000/health`
 
 ## Vercel frontend hosting
 
@@ -110,16 +138,26 @@ For a hosted frontend, set `VITE_API_BASE_URL` in Vercel to the public backend U
 
 ## Local commands
 
-Managed stack:
+Managed stack (Windows, from repo root):
 
 ```powershell
 npm run stack:start
 npm run stack:start:worker
+npm run stack:start:cpu
+npm run stack:start:gpu
 npm run stack:start:vite
 npm run stack:start:vite:worker
 npm run stack:status
 npm run stack:stop
 npm run stack:restart
+```
+
+Other root scripts:
+
+```powershell
+npm run dashboard:dev
+npm run dashboard:build
+npm run backend:test
 ```
 
 CLI examples:
@@ -136,10 +174,10 @@ Queue a run:
 python -m collatz_lab.cli run start --direction verification --name "cpu-queued" --start 1 --end 5000 --kernel cpu-parallel --hardware cpu --enqueue-only
 ```
 
-Validate a run:
+Validate a run (use the run id from the lab, not a claim id):
 
 ```powershell
-python -m collatz_lab.cli validate COL-0002
+python -m collatz_lab.cli validate <run_id>
 ```
 
 Create and link a claim:
@@ -155,6 +193,15 @@ Start a worker manually:
 python -m collatz_lab.cli worker capabilities
 python -m collatz_lab.cli worker start --name "local-worker" --hardware auto
 ```
+
+## Continuous integration
+
+On push and pull requests to `main`, GitHub Actions runs:
+
+- backend: `pip install -e ".[dev]"` and `pytest`
+- dashboard: `npm ci` and `npm run build`
+
+See [`.github/workflows/ci.yml`](./.github/workflows/ci.yml).
 
 ## Open source notes
 
