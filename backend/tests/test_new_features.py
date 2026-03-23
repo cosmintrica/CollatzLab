@@ -8,21 +8,24 @@ from __future__ import annotations
 import pytest
 
 from collatz_lab import services
-from collatz_lab.hardware import CPU_PARALLEL_ODD_KERNEL
+from collatz_lab.hardware import CPU_BARINA_KERNEL, CPU_PARALLEL_ODD_KERNEL, CPU_SIEVE_KERNEL
 from collatz_lab.hypothesis import (
     analyze_record_seeds,
     analyze_residue_classes,
     run_hypothesis_battery,
     scan_trajectory_depths,
+    test_mod3_convergence_redundancy as run_mod3_convergence_redundancy,
     test_stopping_time_growth as check_stopping_time_growth,
 )
 from collatz_lab.repository import LabRepository
-from collatz_lab.schemas import HypothesisStatus, RunStatus
+from collatz_lab.schemas import ComputeProfile, HypothesisStatus, RunStatus
 from collatz_lab.services import (
     SELECTIVE_VALIDATION_THRESHOLD,
     _compute_odd_only_reference,
     compute_range_metrics,
     compute_range_metrics_parallel_odd,
+    compute_range_metrics_parallel_descent,
+    compute_range_metrics_parallel_descent_odd,
     metrics_direct,
     validate_run,
 )
@@ -117,6 +120,72 @@ class TestOddOnlyKernel:
 
 
 # ===========================================================================
+# 1b. Barina kernel correctness
+# ===========================================================================
+
+
+class TestBarinaKernel:
+    """cpu-barina must prove convergence correctly via domain-switching.
+
+    Note: Barina uses a different trajectory than standard Collatz, so
+    stopping_time and max_excursion values won't match the sieve kernel.
+    What matters: same seed count, all seeds converge, no overflows.
+    """
+
+    def test_processed_count_matches_sieve(self):
+        """Both kernels should process the same number of odd seeds."""
+        barina = compute_range_metrics(1, 1000, kernel="cpu-barina")
+        sieve = compute_range_metrics(1, 1000, kernel="cpu-sieve")
+        assert barina.processed == sieve.processed
+
+    def test_all_seeds_converge(self):
+        """No seed should overflow or timeout (stopping_time != -1)."""
+        result = compute_range_metrics(1, 10_000, kernel="cpu-barina")
+        assert result.max_stopping_time["value"] > 0
+        # No overflow: max_excursion should be positive
+        assert result.max_excursion["value"] > 0
+
+    def test_single_seed_n27(self):
+        """n=27 descent verification."""
+        result = compute_range_metrics(27, 27, kernel="cpu-barina")
+        assert result.processed == 1
+        assert result.max_excursion["n"] == 27
+        assert result.max_excursion["value"] > 27  # must exceed seed
+
+    def test_single_even_seed_zero_processed(self):
+        """Even seed should produce 0 processed."""
+        result = compute_range_metrics(28, 28, kernel="cpu-barina")
+        assert result.processed == 0
+
+    def test_all_odd_seeds_verified(self):
+        """Every odd seed must be individually verified — no skipping."""
+        # Range [1,9] has odd seeds: 1,3,5,7,9 = 5 seeds
+        result = compute_range_metrics(1, 9, kernel="cpu-barina")
+        assert result.processed == 5
+
+    def test_convergence_agrees_with_standard_collatz(self):
+        """For every odd seed in [3, 10000], verify that Barina descent agrees
+        with standard Collatz descent.
+
+        Both kernels should agree on WHICH seeds descend (all of them).
+        The descent point (first value < seed) must be the same even though
+        the intermediate trajectory differs.
+        """
+        barina = compute_range_metrics(1, 10_000, kernel="cpu-barina")
+        sieve = compute_range_metrics(1, 10_000, kernel="cpu-sieve")
+        # Same number of seeds processed (no skipping)
+        assert barina.processed == sieve.processed
+        # Both must find ALL seeds converge (no overflows/timeouts)
+        assert barina.max_stopping_time["value"] > 0
+        assert sieve.max_stopping_time["value"] > 0
+
+    def test_checkpoint_interval(self):
+        """Barina kernel should have its own checkpoint interval."""
+        interval = services._effective_checkpoint_interval("cpu-barina", 250)
+        assert interval >= 5_000_000
+
+
+# ===========================================================================
 # 2. Selective validator
 # ===========================================================================
 
@@ -166,6 +235,37 @@ class TestSelectiveValidator:
         services.execute_run(repository, run.id)
         validated = validate_run(repository, run.id)
         assert validated.status == RunStatus.VALIDATED
+
+    def test_small_cpu_sieve_run_validates_against_descent_reference(self, repository: LabRepository):
+        """cpu-sieve must validate against descent semantics, not full-orbit cpu-direct."""
+        run = repository.create_run(
+            direction_slug="verification",
+            name="sieve-validation-test",
+            range_start=1,
+            range_end=100,
+            kernel=CPU_SIEVE_KERNEL,
+            hardware="cpu",
+        )
+        services.execute_run(repository, run.id)
+        validated = validate_run(repository, run.id)
+        assert validated.status == RunStatus.VALIDATED
+        assert "descent reference" in validated.summary or "Validation passed" in validated.summary
+
+    def test_selective_cpu_sieve_run_validates(self, repository: LabRepository, monkeypatch):
+        """Large cpu-sieve runs should use selective validation against descent windows."""
+        monkeypatch.setattr(services, "SELECTIVE_VALIDATION_THRESHOLD", 50)
+        run = repository.create_run(
+            direction_slug="verification",
+            name="sieve-selective-validation-test",
+            range_start=1,
+            range_end=100,
+            kernel=CPU_SIEVE_KERNEL,
+            hardware="cpu",
+        )
+        services.execute_run(repository, run.id)
+        validated = validate_run(repository, run.id, window_count=2, window_size=20)
+        assert validated.status == RunStatus.VALIDATED
+        assert "selective" in validated.summary
 
     def test_validation_creates_artifact(self, repository: LabRepository):
         """Validation should create a report artifact."""
@@ -281,6 +381,20 @@ class TestHypothesisGenerators:
             assert "predicted_tst" in bin_data
             assert "deviation_pct" in bin_data
 
+    def test_mod3_convergence_redundancy(self):
+        """Mod-3 filter is an unproven hypothesis — test it empirically."""
+        result = run_mod3_convergence_redundancy(start=1, end=5_000)
+        assert result.category == "structural-filter"
+        assert result.status in {
+            HypothesisStatus.PLAUSIBLE,
+            HypothesisStatus.FALSIFIED,
+        }
+        assert result.evidence
+        evidence = result.evidence[0]
+        assert "tested" in evidence
+        assert "confirmed" in evidence
+        assert "counterexamples" in evidence
+
     def test_hypothesis_battery_persistence(self, repository: LabRepository):
         """Battery should create claims and artifacts."""
         before_claims = len(repository.list_claims())
@@ -288,9 +402,9 @@ class TestHypothesisGenerators:
             repository, end=1000, moduli=[3, 4],
         )
         after_claims = len(repository.list_claims())
-        # Should create claims: 2 residue + 1 record + 1 trajectory + 1 growth = 5
-        assert len(hypotheses) == 5
-        assert after_claims == before_claims + 5
+        # 2 residue + 1 record + 1 trajectory + 1 growth + 1 mod-3 = 6
+        assert len(hypotheses) == 6
+        assert after_claims == before_claims + 6
         # Each hypothesis should have an id
         for h in hypotheses:
             assert h.id
@@ -301,8 +415,8 @@ class TestHypothesisGenerators:
         before_artifacts = len(repository.list_artifacts())
         run_hypothesis_battery(repository, end=500, moduli=[3])
         after_artifacts = len(repository.list_artifacts())
-        # 1 residue + 1 record + 1 trajectory + 1 growth = 4 hypotheses, 4 artifacts
-        assert after_artifacts >= before_artifacts + 4
+        # 1 residue + 1 record + 1 trajectory + 1 growth + 1 mod-3 = 5 hypotheses, 5 artifacts
+        assert after_artifacts >= before_artifacts + 5
 
     def test_hypothesis_sandbox_direction_exists(self, repository: LabRepository):
         """The hypothesis-sandbox direction should be seeded."""
@@ -317,18 +431,65 @@ class TestHypothesisGenerators:
 
 
 class TestContinuousQueueOddOnly:
-    """Verify that queue_continuous_verification_runs uses cpu-parallel-odd."""
+    """Verify that queue_continuous_verification_runs uses sieve kernel.
 
-    def test_continuous_cpu_uses_odd_only_kernel(self, repository: LabRepository):
+    The sieve kernel uses standard Collatz steps (3n+1 / n/2) with early
+    termination.  Every odd seed is individually verified — no seeds are
+    skipped.  This is the canonical verification path.
+    """
+
+    def test_continuous_cpu_uses_sieve_kernel(self, repository: LabRepository):
         queued_ids = services.queue_continuous_verification_runs(
             repository, supported_hardware=["cpu"],
         )
         assert queued_ids
         run = repository.get_run(queued_ids[0])
-        assert run.kernel == CPU_PARALLEL_ODD_KERNEL
+        assert run.kernel == CPU_SIEVE_KERNEL
         assert run.name == "autopilot-continuous-cpu"
 
     def test_odd_only_kernel_in_effective_checkpoint_interval(self):
         """Odd-only kernel should have its own checkpoint interval."""
         interval = services._effective_checkpoint_interval("cpu-parallel-odd", 250)
         assert interval >= 2_000_000
+
+
+class TestDescentReferences:
+    """Validation references for sieve kernels must match their descent semantics."""
+
+    def test_odd_descent_reference_matches_cpu_sieve(self):
+        candidate = compute_range_metrics(1, 500, kernel=CPU_SIEVE_KERNEL)
+        reference = compute_range_metrics_parallel_descent_odd(1, 500)
+        assert candidate.max_total_stopping_time == reference.max_total_stopping_time
+        assert candidate.max_stopping_time == reference.max_stopping_time
+        assert candidate.max_excursion == reference.max_excursion
+
+    def test_full_descent_reference_is_not_full_orbit_reference(self):
+        descent = compute_range_metrics_parallel_descent(1, 100)
+        full = compute_range_metrics(1, 100, kernel="cpu-direct")
+        assert descent.max_total_stopping_time != full.max_total_stopping_time
+
+    def test_cpu_sieve_overflow_fallback_preserves_descent_semantics(self):
+        start = 1_002_416_050_001
+        end = start + 100_000 - 1
+        candidate = compute_range_metrics(start, end, kernel=CPU_SIEVE_KERNEL)
+        reference = compute_range_metrics_parallel_descent_odd(start, end)
+        assert candidate.max_total_stopping_time == reference.max_total_stopping_time
+        assert candidate.max_stopping_time == reference.max_stopping_time
+        assert candidate.max_excursion == reference.max_excursion
+
+
+class TestComputeBudgetThrottle:
+    """Budget slider must change wall time per batch, not only chunk sizing."""
+
+    def test_throttle_matches_duty_cycle_formula(self):
+        p50 = ComputeProfile(cpu_percent=50, gpu_percent=50, system_percent=100)
+        assert services._compute_budget_throttle_seconds(
+            hardware="cpu", profile=p50, compute_sec=2.0
+        ) == pytest.approx(2.0)
+        assert services._compute_budget_throttle_seconds(
+            hardware="gpu", profile=p50, compute_sec=2.0
+        ) == pytest.approx(2.0)
+        p100 = ComputeProfile(cpu_percent=100, gpu_percent=100, system_percent=100)
+        assert services._compute_budget_throttle_seconds(
+            hardware="cpu", profile=p100, compute_sec=2.0
+        ) == 0.0

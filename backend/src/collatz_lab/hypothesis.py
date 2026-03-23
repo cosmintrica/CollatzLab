@@ -76,39 +76,40 @@ def analyze_residue_classes(
     if modulus < 2:
         raise ValueError("Modulus must be at least 2.")
 
-    # Collect per-class data
-    class_data: dict[int, list[int]] = {r: [] for r in range(modulus)}
-    class_excursions: dict[int, list[int]] = {r: [] for r in range(modulus)}
+    # Collect per-class data: each entry is (seed, value) so the seed is
+    # always recoverable without index arithmetic.
+    class_tst: dict[int, list[tuple[int, int]]] = {r: [] for r in range(modulus)}
+    class_exc: dict[int, list[tuple[int, int]]] = {r: [] for r in range(modulus)}
 
     step = 2 if odd_only else 1
     first = start if (not odd_only or start & 1) else start + 1
     for n in range(first, end + 1, step):
         m = metrics_direct(n)
         r = n % modulus
-        class_data[r].append(m.total_stopping_time)
-        class_excursions[r].append(m.max_excursion)
+        class_tst[r].append((n, m.total_stopping_time))
+        class_exc[r].append((n, m.max_excursion))
 
     # Build stats
     stats: list[ResidueClassStats] = []
     for r in range(modulus):
-        tst_values = class_data[r]
-        exc_values = class_excursions[r]
-        if not tst_values:
+        tst_pairs = class_tst[r]
+        exc_pairs = class_exc[r]
+        if not tst_pairs:
             continue
-        max_tst_val = max(tst_values)
-        max_tst_idx = tst_values.index(max_tst_val)
-        max_exc_val = max(exc_values)
-        max_exc_idx = exc_values.index(max_exc_val)
+        tst_values = [v for _, v in tst_pairs]
+        exc_values = [v for _, v in exc_pairs]
+        best_tst = max(tst_pairs, key=lambda p: p[1])
+        best_exc = max(exc_pairs, key=lambda p: p[1])
         stats.append(ResidueClassStats(
             residue=r,
             count=len(tst_values),
             mean_tst=statistics.mean(tst_values),
             stddev_tst=statistics.stdev(tst_values) if len(tst_values) > 1 else 0.0,
             mean_excursion=statistics.mean(exc_values),
-            max_tst=max_tst_val,
-            max_tst_seed=first + step * (sum(len(class_data[rr]) for rr in range(r)) + max_tst_idx),
-            max_excursion=max_exc_val,
-            max_excursion_seed=first + step * (sum(len(class_excursions[rr]) for rr in range(r)) + max_exc_idx),
+            max_tst=best_tst[1],
+            max_tst_seed=best_tst[0],
+            max_excursion=best_exc[1],
+            max_excursion_seed=best_exc[0],
         ))
 
     if not stats:
@@ -503,6 +504,122 @@ def test_stopping_time_growth(
 
 
 # ---------------------------------------------------------------------------
+# 5. Mod-3 convergence redundancy test
+# ---------------------------------------------------------------------------
+
+def test_mod3_convergence_redundancy(
+    start: int = 1,
+    end: int = 50_000,
+) -> HypothesisResult:
+    """Test whether seeds n ≡ 2 (mod 3) can be skipped during verification.
+
+    Claim: if n ≡ 2 (mod 3), then n = 3k+2 for some k ≥ 0.  The smaller
+    odd seed (2k+1) has an orbit that passes through a value ≥ n, so n's
+    convergence is implied by the convergence of (2k+1) < n.
+
+    This is an UNPROVEN hypothesis.  We test it empirically by checking
+    whether every seed n ≡ 2 (mod 3) has a smaller odd predecessor in its
+    Collatz orbit backtracking tree.
+
+    This test does NOT prove the claim — it only checks for counterexamples
+    in the given range.  The claim requires a rigorous mathematical proof
+    before it can be used to skip seeds in production verification.
+    """
+    counterexamples: list[dict] = []
+    tested = 0
+    confirmed = 0
+
+    for n in range(max(3, start), end + 1):
+        if n & 1 == 0:
+            continue
+        if n % 3 != 2:
+            continue
+
+        tested += 1
+        # n = 3k+2, so the claimed predecessor is (2k+1)
+        k = (n - 2) // 3
+        predecessor = 2 * k + 1
+
+        if predecessor < 1:
+            counterexamples.append({
+                "n": n, "k": k, "predecessor": predecessor,
+                "reason": "predecessor < 1",
+            })
+            continue
+
+        # Verify: does the orbit of predecessor actually pass through
+        # or above n?  Walk the standard Collatz orbit of predecessor.
+        current = predecessor
+        found = False
+        for _step in range(10_000):
+            if current >= n:
+                found = True
+                break
+            if current <= 1:
+                break
+            if current & 1:
+                current = 3 * current + 1
+            else:
+                current >>= 1
+
+        if found:
+            confirmed += 1
+        else:
+            counterexamples.append({
+                "n": n, "predecessor": predecessor,
+                "reason": f"orbit of {predecessor} never reached {n}",
+            })
+
+    if counterexamples:
+        status = HypothesisStatus.FALSIFIED
+        statement = (
+            f"Mod-3 skip hypothesis FALSIFIED: {len(counterexamples)} "
+            f"counterexample(s) found in [{start}, {end}]. "
+            f"Seeds n ≡ 2 (mod 3) CANNOT be safely skipped."
+        )
+        falsification = f"Counterexamples: {counterexamples[:10]}"
+    elif tested == 0:
+        status = HypothesisStatus.PROPOSED
+        statement = "No seeds tested (range too small or no n ≡ 2 mod 3)."
+        falsification = ""
+    else:
+        status = HypothesisStatus.PLAUSIBLE
+        statement = (
+            f"All {confirmed}/{tested} odd seeds n ≡ 2 (mod 3) in [{start}, {end}] "
+            f"have a smaller predecessor (2k+1) whose orbit reaches n. "
+            f"The mod-3 skip hypothesis is plausible but NOT PROVEN. "
+            f"A rigorous proof is required before using this for verification."
+        )
+        falsification = ""
+
+    return HypothesisResult(
+        title=f"Mod-3 convergence redundancy test [{start}, {end}]",
+        statement=statement,
+        category="structural-filter",
+        status=status,
+        test_methodology=(
+            f"For each odd seed n ≡ 2 (mod 3) in [{start}, {end}], computed "
+            f"the claimed predecessor (2k+1) where n=3k+2, then walked the "
+            f"standard Collatz orbit of that predecessor to check if it reaches n."
+        ),
+        test_range=f"{start}-{end}",
+        evidence=[{
+            "tested": tested,
+            "confirmed": confirmed,
+            "counterexamples": len(counterexamples),
+            "counterexample_details": counterexamples[:10],
+        }],
+        falsification=falsification,
+        notes=(
+            "This tests the claim that seeds n ≡ 2 (mod 3) are redundant for "
+            "verification because their convergence is implied by a smaller seed. "
+            "Even if plausible over a finite range, this is NOT a proof. "
+            "Do NOT use for production verification without a published proof."
+        ),
+    )
+
+
+# ---------------------------------------------------------------------------
 # Orchestrator: run all generators and persist results
 # ---------------------------------------------------------------------------
 
@@ -533,6 +650,9 @@ def run_hypothesis_battery(
 
     # 4. Stopping time growth rate
     results.append(test_stopping_time_growth(start=1, end=end))
+
+    # 5. Mod-3 convergence redundancy (structural filter hypothesis)
+    results.append(test_mod3_convergence_redundancy(start=1, end=min(end, 10_000)))
 
     # Persist as claims under hypothesis-sandbox
     hypotheses: list[Hypothesis] = []

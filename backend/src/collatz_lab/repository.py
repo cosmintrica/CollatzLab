@@ -25,6 +25,7 @@ from .schemas import (
     MapVariant,
     Run,
     RunStatus,
+    VALID_RUN_TRANSITIONS,
     ReviewRubric,
     Source,
     SourceClaimType,
@@ -449,6 +450,12 @@ class LabRepository:
         code_version: str = "workspace",
         hardware: str = "cpu",
     ) -> Run:
+        if not isinstance(range_start, int) or range_start < 1:
+            raise ValueError(f"range_start must be a positive integer, got {range_start!r}")
+        if not isinstance(range_end, int) or range_end < range_start:
+            raise ValueError(
+                f"range_end must be an integer >= range_start ({range_start}), got {range_end!r}"
+            )
         timestamp = utc_now()
         with connect(str(self.settings.db_path)) as conn:
             run_id = self.next_id(conn)
@@ -564,6 +571,15 @@ class LabRepository:
         fields: list[str] = []
         values: list[Any] = []
         if status is not None:
+            current_run = self.get_run(run_id)
+            current_status = RunStatus(current_run.status)
+            if status != current_status:
+                allowed = VALID_RUN_TRANSITIONS.get(current_status, frozenset())
+                if status not in allowed:
+                    raise ValueError(
+                        f"Invalid run status transition: {current_status.value} → {status.value} "
+                        f"(allowed: {', '.join(s.value for s in allowed) or 'none'})"
+                    )
             fields.append("status = ?")
             values.append(status.value)
         if checkpoint is not None:
@@ -1504,12 +1520,14 @@ class LabRepository:
     def update_compute_profile(
         self,
         *,
+        continuous_enabled: bool = True,
         system_percent: int,
         cpu_percent: int,
         gpu_percent: int,
     ) -> ComputeProfile:
         timestamp = utc_now()
         payload = {
+            "continuous_enabled": bool(continuous_enabled),
             "system_percent": max(0, min(100, int(system_percent))),
             "cpu_percent": max(0, min(100, int(cpu_percent))),
             "gpu_percent": max(0, min(100, int(gpu_percent))),

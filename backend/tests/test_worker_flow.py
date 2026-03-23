@@ -134,6 +134,96 @@ def test_worker_can_seed_continuous_run_when_queue_is_empty(repository: LabRepos
     assert completed.hardware == "cpu"
 
 
+def test_worker_prioritizes_legacy_validation_rerun_before_continuous(repository: LabRepository, monkeypatch):
+    legacy_failed = repository.create_run(
+        direction_slug="verification",
+        name="legacy-failed-validation",
+        range_start=10_001,
+        range_end=10_200,
+        kernel="cpu-sieve",
+        hardware="cpu",
+        owner="gemini-autopilot",
+    )
+    repository.update_run(
+        legacy_failed.id,
+        status=RunStatus.FAILED,
+        checkpoint={"next_value": 10_201, "last_processed": 10_200},
+        metrics={"processed": 200, "last_processed": 10_200},
+        summary="Validation failed: 3 mismatch(es) detected.",
+    )
+
+    capabilities = discover_hardware()
+    supported_hardware, supported_kernels = select_worker_execution_profile(
+        capabilities,
+        requested_hardware="cpu",
+    )
+    worker = repository.register_worker(
+        name="legacy-rerun-worker",
+        role="compute-agent",
+        hardware="cpu",
+        capabilities=[item.model_dump() for item in capabilities],
+    )
+
+    def fake_execute_run(repo, run_id, checkpoint_interval=250):
+        return repo.update_run(run_id, status=RunStatus.COMPLETED, summary="legacy rerun completed")
+
+    monkeypatch.setattr(services, "execute_run", fake_execute_run)
+
+    completed = process_next_queued_run(
+        repository,
+        worker_id=worker.id,
+        supported_hardware=supported_hardware,
+        supported_kernels=supported_kernels,
+    )
+
+    assert completed is not None
+    assert completed.name == f"legacy-rerun-{legacy_failed.id}"
+    assert completed.owner == services.LEGACY_VALIDATION_RERUN_OWNER
+    refreshed_failed = repository.get_run(legacy_failed.id)
+    assert "Legacy revalidation queued via" in refreshed_failed.summary
+
+
+def test_legacy_validation_failure_is_marked_superseded_when_successor_exists(repository: LabRepository):
+    failed = repository.create_run(
+        direction_slug="verification",
+        name="legacy-failed-summary",
+        range_start=20_001,
+        range_end=20_100,
+        kernel="cpu-sieve",
+        hardware="cpu",
+        owner="gemini-autopilot",
+    )
+    repository.update_run(
+        failed.id,
+        status=RunStatus.FAILED,
+        checkpoint={"next_value": 20_101, "last_processed": 20_100},
+        metrics={"processed": 100, "last_processed": 20_100},
+        summary="Validation failed: 2 mismatch(es) detected.",
+    )
+    successor = repository.create_run(
+        direction_slug="verification",
+        name="successor-run",
+        range_start=20_001,
+        range_end=20_100,
+        kernel="cpu-sieve",
+        hardware="cpu",
+        owner="legacy-revalidation",
+    )
+    repository.update_run(
+        successor.id,
+        status=RunStatus.COMPLETED,
+        checkpoint={"next_value": 20_101, "last_processed": 20_100},
+        metrics={"processed": 100, "last_processed": 20_100},
+        summary="Completed on current code path.",
+    )
+
+    updated = services.annotate_legacy_validation_failures(repository)
+
+    assert updated >= 1
+    refreshed = repository.get_run(failed.id)
+    assert f"Superseded by {successor.id}" in refreshed.summary
+
+
 def test_overflow_failure_creates_recovered_prefix_and_exact_cpu_tail(repository: LabRepository):
     failed = repository.create_run(
         direction_slug="verification",
@@ -228,8 +318,8 @@ def test_continuous_queue_uses_parallel_kernel_after_cpu_overflow(repository: La
     assert queued_ids
     next_run = repository.get_run(queued_ids[0])
     assert next_run.range_start == 201
-    # Continuous CPU runs now use odd-only kernel for 2x throughput.
-    assert next_run.kernel == "cpu-parallel-odd"
+    # Continuous CPU runs now use sieve kernel for ~10-20x throughput.
+    assert next_run.kernel == "cpu-sieve"
     assert next_run.name == "autopilot-continuous-cpu"
 
 

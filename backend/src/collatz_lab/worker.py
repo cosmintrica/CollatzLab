@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 
 from .hardware import discover_hardware, select_worker_execution_profile
 from .repository import LabRepository
-from .schemas import RunStatus, Worker
+from .schemas import RunStatus, Worker, WorkerStatus
 from .services import process_next_queued_run, validate_run
 
 
@@ -21,6 +21,8 @@ from .services import process_next_queued_run, validate_run
 
 VALIDATION_INTERVAL = 5       # validate after every N verification runs
 HYPOTHESIS_INTERVAL = 20      # run hypothesis experiment after every N runs
+MAX_CONSECUTIVE_FAILURES = 5  # stop retrying after N consecutive failures
+FAILURE_BACKOFF_BASE = 10     # seconds to wait after a failure (doubles each time)
 
 
 @dataclass
@@ -37,6 +39,7 @@ class _WorkerState:
     total_runs: int = 0
     validations_done: int = 0
     hypotheses_run: int = 0
+    consecutive_failures: int = 0
 
 
 def _try_auto_validate(repository: LabRepository, state: _WorkerState) -> bool:
@@ -191,9 +194,35 @@ def start_worker_loop(
                 return WorkerLoopResult(worker=repository.get_worker(worker.id), processed_run_id=run.id if run else None)
             if run is None:
                 repository.update_worker(worker.id, status="idle")
+                state.consecutive_failures = 0
                 time.sleep(poll_interval)
                 continue
 
+            # Check if run failed (non-overflow failures trigger backoff)
+            if run.status == RunStatus.FAILED and "overflow guard" not in (run.summary or "").lower():
+                state.consecutive_failures += 1
+                backoff = min(FAILURE_BACKOFF_BASE * (2 ** (state.consecutive_failures - 1)), 300)
+                print(json.dumps({
+                    "worker_id": worker.id,
+                    "action": "failure-backoff",
+                    "failed_run_id": run.id,
+                    "consecutive_failures": state.consecutive_failures,
+                    "backoff_seconds": backoff,
+                    "summary": (run.summary or "")[:200],
+                }))
+                if state.consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
+                    print(json.dumps({
+                        "worker_id": worker.id,
+                        "action": "max-failures-reached",
+                        "consecutive_failures": state.consecutive_failures,
+                        "message": f"Stopping after {MAX_CONSECUTIVE_FAILURES} consecutive failures. Manual intervention required.",
+                    }))
+                    repository.update_worker(worker.id, status=WorkerStatus.ERROR)
+                    return WorkerLoopResult(worker=repository.get_worker(worker.id), processed_run_id=run.id)
+                time.sleep(backoff)
+                continue
+
+            state.consecutive_failures = 0
             state.total_runs += 1
             state.runs_since_validation += 1
             state.runs_since_hypothesis += 1

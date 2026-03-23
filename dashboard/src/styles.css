@@ -19,6 +19,7 @@
   --cold-bg: #e2e8f0;
   --cold-ink: #475569;
   --shadow: 0 12px 30px rgba(74, 49, 32, 0.07);
+  --shadow-color: rgba(74, 49, 32, 0.14);
   --radius: 22px;
   font-family: "Space Grotesk", "Segoe UI", sans-serif;
 }
@@ -112,7 +113,13 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .workspace-rail-left,
 .workspace-rail-right {
   min-width: 0;
+  overflow-x: hidden;
+  max-width: 100%;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
 }
+.workspace-rail-left::-webkit-scrollbar,
+.workspace-rail-right::-webkit-scrollbar { display: none; }
 .workspace-rail-left {
   display: none;
 }
@@ -214,8 +221,9 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .sidebar-footer {
   padding-top: 6px;
   border-top: 1px solid rgba(161, 91, 23, 0.12);
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) auto auto;
   align-items: center;
+  gap: 6px;
 }
 .sidebar-footer strong, .mobile-topbar-copy strong { display: block; margin-top: 2px; font-size: 0.92rem; }
 .sidebar-refresh, .mobile-refresh { min-width: 82px; }
@@ -318,6 +326,10 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .reddit-rail-card {
   display: grid;
   gap: 10px;
+  width: 100%;
+  max-width: 100%;
+  overflow: hidden;
+  box-sizing: border-box;
 }
 .reddit-rail-note {
   margin: 0;
@@ -333,6 +345,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .reddit-feed-list {
   display: grid;
   gap: 10px;
+  overflow-x: hidden;
 }
 .reddit-tracked-list {
   display: grid;
@@ -362,6 +375,10 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
   border-radius: 14px;
   border: 1px solid rgba(161, 91, 23, 0.12);
   background: rgba(255, 250, 243, 0.92);
+  overflow: hidden;
+  max-width: 100%;
+  word-break: break-word;
+  min-width: 0;
 }
 .reddit-post-card strong {
   line-height: 1.3;
@@ -377,17 +394,22 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .reddit-post-excerpt {
   display: -webkit-box;
   -webkit-box-orient: vertical;
-  -webkit-line-clamp: 3;
+  -webkit-line-clamp: 5;
   overflow: hidden;
+}
+.reddit-post-footer {
+  display: grid;
+  gap: 6px;
+  margin-top: 2px;
 }
 .reddit-post-meta {
   display: flex;
-  gap: 6px;
-  flex-wrap: wrap;
+  gap: 7px;
+  align-items: center;
   color: var(--muted);
   font-size: 0.61rem;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
+  font-weight: 600;
+  letter-spacing: 0.02em;
 }
 .reddit-post-card .secondary-button {
   min-height: 30px;
@@ -422,6 +444,147 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
   text-decoration: none;
   min-height: 34px;
   padding: 6px 10px;
+}
+
+/* ── Reddit Rail v2 ── */
+.reddit-rail-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 8px;
+}
+.reddit-rail-title {
+  margin: 2px 0 0;
+  font-size: 0.92rem;
+  line-height: 1.2;
+}
+.reddit-open-reddit-link {
+  flex-shrink: 0;
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--accent);
+  text-decoration: none;
+  padding: 3px 7px;
+  border-radius: 8px;
+  background: rgba(161, 91, 23, 0.08);
+  transition: background 0.15s;
+}
+.reddit-open-reddit-link:hover {
+  background: rgba(161, 91, 23, 0.16);
+}
+.reddit-rail-meta-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.reddit-meta-chip {
+  font-size: 0.63rem;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: rgba(161, 91, 23, 0.07);
+  color: var(--muted);
+  font-weight: 600;
+  letter-spacing: 0.03em;
+}
+.reddit-meta-chip-alert {
+  background: #fff1f2;
+  color: var(--bad-ink);
+}
+.reddit-post-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  cursor: pointer;
+  user-select: none;
+  gap: 6px;
+}
+.reddit-post-header-left {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+.reddit-post-card-own {
+  background: linear-gradient(160deg, #fffbf3 0%, #fef3dc 55%, #fde8c0 100%) !important;
+  border-color: rgba(161, 91, 23, 0.32) !important;
+  border-top: 3px solid #c97820 !important;
+  box-shadow:
+    0 4px 18px rgba(161, 91, 23, 0.14),
+    inset 0 1px 0 rgba(255, 255, 255, 0.9) !important;
+}
+.reddit-own-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 0.61rem;
+  font-weight: 800;
+  color: #7a4510;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  background: rgba(161, 91, 23, 0.12);
+  padding: 2px 7px;
+  border-radius: 999px;
+  border: 1px solid rgba(161, 91, 23, 0.2);
+}
+.reddit-post-time {
+  font-size: 0.61rem;
+  color: var(--muted);
+}
+.reddit-expand-chevron {
+  font-size: 0.6rem;
+  color: var(--muted);
+  flex-shrink: 0;
+}
+.reddit-post-title {
+  display: block;
+  font-size: 0.8rem;
+  line-height: 1.3;
+  color: var(--ink);
+  margin: 1px 0;
+}
+.reddit-post-excerpt-full {
+  -webkit-line-clamp: unset !important;
+  overflow: visible !important;
+}
+.reddit-post-actions {
+  display: flex;
+  gap: 5px;
+  align-items: center;
+  flex-shrink: 0;
+}
+.reddit-action-link {
+  font-size: 0.65rem;
+  font-weight: 700;
+  color: var(--accent);
+  text-decoration: none;
+  padding: 3px 8px;
+  border-radius: 8px;
+  background: rgba(161, 91, 23, 0.08);
+  transition: background 0.15s;
+  white-space: nowrap;
+}
+.reddit-action-link:hover {
+  background: rgba(161, 91, 23, 0.16);
+}
+.reddit-action-link-primary {
+  background: rgba(161, 91, 23, 0.14);
+}
+.reddit-action-button {
+  border: none;
+  cursor: pointer;
+  font-family: inherit;
+}
+.reddit-signal-indirect {
+  background: #ede9fe;
+  color: #5b21b6;
+}
+.reddit-signal-structure {
+  background: #dcfce7;
+  color: #166534;
+}
+.reddit-signal-infrastructure {
+  background: #dbeafe;
+  color: #1e40af;
 }
 
 /* ── Hero (overview only, compact) ── */
@@ -648,11 +811,338 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
   line-height: 1;
 }
 
+/* ── Logs panel ── */
+.logs-toggle-btn {
+  background: none;
+  border: none;
+  color: var(--muted);
+  font-size: 0.73rem;
+  cursor: pointer;
+  padding: 0;
+  text-decoration: none;
+}
+.logs-toggle-btn:hover { color: var(--accent); }
+
+.logs-panel {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 45vh;
+  min-height: 220px;
+  max-height: 70vh;
+  background: var(--panel);
+  border-top: 2px solid var(--accent);
+  box-shadow: 0 -8px 30px var(--shadow-color, rgba(74, 49, 32, 0.12));
+  display: flex;
+  flex-direction: column;
+  z-index: 900;
+  font-family: "IBM Plex Mono", "Cascadia Code", monospace;
+}
+
+.logs-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--line);
+  flex-shrink: 0;
+  flex-wrap: wrap;
+  position: relative;
+}
+.logs-title-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+.logs-title {
+  font-weight: 700;
+  font-size: 0.78rem;
+  color: var(--ink);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.logs-count {
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 0.62rem;
+  font-weight: 700;
+  padding: 1px 6px;
+  border-radius: 8px;
+}
+.logs-refresh {
+  background: none;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  color: var(--muted);
+  font-size: 0.72rem;
+  cursor: pointer;
+  padding: 1px 6px;
+  line-height: 1.2;
+}
+.logs-refresh:hover { color: var(--accent); border-color: var(--accent); }
+
+.logs-filters {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex: 1;
+  min-width: 0;
+}
+.logs-search {
+  flex: 1;
+  min-width: 100px;
+  max-width: 240px;
+  padding: 3px 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--bg);
+  font-family: inherit;
+  font-size: 0.68rem;
+  color: var(--ink);
+  outline: none;
+}
+.logs-search:focus { border-color: var(--accent); }
+.logs-search::placeholder { color: var(--muted); opacity: 0.6; }
+
+.logs-select {
+  padding: 3px 6px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--bg);
+  font-family: inherit;
+  font-size: 0.65rem;
+  color: var(--ink);
+  cursor: pointer;
+}
+.logs-sort-btn {
+  background: none;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  color: var(--muted);
+  font-size: 0.62rem;
+  font-family: inherit;
+  cursor: pointer;
+  padding: 2px 6px;
+  white-space: nowrap;
+}
+.logs-sort-btn:hover { color: var(--accent); border-color: var(--accent); }
+
+.logs-close {
+  position: absolute;
+  right: 8px;
+  top: 6px;
+  background: none;
+  border: none;
+  color: var(--muted);
+  font-size: 0.88rem;
+  cursor: pointer;
+  padding: 2px 6px;
+  line-height: 1;
+}
+.logs-close:hover { color: var(--bad-ink); }
+
+.logs-list {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 0;
+}
+.logs-empty {
+  padding: 24px;
+  text-align: center;
+  color: var(--muted);
+  font-size: 0.72rem;
+}
+
+.log-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 2px 12px;
+  font-size: 0.64rem;
+  line-height: 1.45;
+  border-bottom: 1px solid var(--line);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.log-row:hover { background: var(--accent-soft); }
+
+.log-ts {
+  flex-shrink: 0;
+  color: var(--muted);
+  opacity: 0.7;
+  min-width: 120px;
+}
+.log-level {
+  flex-shrink: 0;
+  min-width: 40px;
+  font-weight: 700;
+  font-size: 0.58rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+.log-level-info { color: var(--cool-ink); }
+.log-level-warning { color: var(--warn-ink); }
+.log-level-error { color: var(--bad-ink); }
+.log-level-critical { color: var(--bad-ink); }
+.log-level-debug { color: var(--muted); }
+
+.log-source {
+  flex-shrink: 0;
+  min-width: 80px;
+  max-width: 120px;
+  color: var(--accent);
+  font-size: 0.6rem;
+  opacity: 0.8;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.log-msg {
+  flex: 1;
+  color: var(--ink);
+  min-width: 0;
+}
+
+.log-row.log-error { background: var(--bad-bg); }
+.log-row.log-warn { background: var(--warn-bg); }
+.log-row.log-run-fail { border-left: 2px solid var(--bad-ink); }
+.log-row.log-run-superseded { opacity: 0.5; border-left: 2px solid var(--muted); }
+
+/* ── Live Activity Panel ── */
+.live-activity-panel {
+  background: linear-gradient(180deg, var(--panel) 0%, var(--panel-soft) 100%);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0.6rem 0.8rem;
+  margin: 0.5rem 0;
+  box-shadow: 0 4px 18px var(--shadow-color, rgba(74, 49, 32, 0.08));
+}
+.live-activity-title {
+  font-size: 0.72rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--accent);
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin-bottom: 0.4rem;
+}
+.live-activity-rows { display: flex; flex-direction: column; gap: 0.5rem; }
+.live-activity-row {
+  background: var(--panel-soft);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 0.45rem 0.6rem;
+}
+.live-activity-head {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.25rem;
+}
+.live-run-id { font-weight: 600; font-size: 0.78rem; font-family: var(--mono); }
+.live-run-hw, .live-run-kernel {
+  font-size: 0.65rem;
+  background: var(--accent-soft);
+  border-radius: 3px;
+  padding: 0.05rem 0.3rem;
+  font-family: var(--mono);
+  color: var(--accent);
+  border: 1px solid var(--line);
+}
+.live-run-speed {
+  font-size: 0.72rem;
+  font-weight: 600;
+  font-family: var(--mono);
+  color: var(--good-ink);
+  margin-left: auto;
+}
+.live-run-eta {
+  font-size: 0.65rem;
+  font-family: var(--mono);
+  color: var(--muted);
+  background: var(--accent-soft);
+  border-radius: 3px;
+  padding: 0.05rem 0.3rem;
+}
+.live-activity-bar-wrap {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin-bottom: 0.2rem;
+}
+.live-activity-bar {
+  flex: 1;
+  height: 6px;
+  background: var(--line);
+  border-radius: 3px;
+  overflow: hidden;
+}
+.live-activity-bar-fill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 3px;
+  transition: width 0.8s ease;
+  min-width: 2px;
+}
+.live-bar-pulse .live-activity-bar-fill {
+  opacity: 0.35;
+  animation: barPulse 1.8s ease-in-out infinite;
+}
+@keyframes barPulse {
+  0%, 100% { opacity: 0.15; }
+  50% { opacity: 0.4; }
+}
+.live-activity-pct {
+  font-size: 0.65rem;
+  font-family: var(--mono);
+  font-weight: 600;
+  min-width: 3.2em;
+  text-align: right;
+}
+.live-activity-details {
+  display: flex;
+  gap: 0.6rem;
+  font-size: 0.65rem;
+  font-family: var(--mono);
+  color: var(--muted);
+}
+.live-seed { color: var(--ink); }
+.live-activity-records {
+  display: flex;
+  gap: 0.8rem;
+  flex-wrap: wrap;
+  margin-top: 0.15rem;
+}
+.live-record {
+  font-size: 0.6rem;
+  font-family: var(--mono);
+  color: var(--good-ink);
+  background: var(--good-bg);
+  border-radius: 3px;
+  padding: 0.05rem 0.3rem;
+}
+
 /* ── Shared card/panel base ── */
 .hero, .summary-card, .panel, .legend-card, .list-card, .empty-state, .hero-chip, .capability-card {
   content-visibility: auto;
   contain-intrinsic-size: 1px 200px;
+  contain: layout style paint;
 }
+
+/* GPU compositing hints for animated/frequently-updated elements */
+.live-activity-bar-fill, .usage-bar-fill, .usage-bar-fill-gpu { will-change: width; }
+.live-dot, .live-dot-sm { will-change: opacity; }
+
+/* Reduce layout thrashing on tab content */
+[id^="tab-content-"] { contain: layout style; }
+
+/* Stack lists: skip rendering off-screen items */
+.stack-list > .list-card { content-visibility: auto; contain-intrinsic-size: 1px 80px; }
 
 .panel {
   padding: 20px;
@@ -772,8 +1262,23 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 
 .tracks-grid {
   display: grid;
-  gap: 12px;
-  grid-template-columns: repeat(5, 1fr);
+  gap: 8px;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+}
+.tracks-grid .list-card {
+  padding: 10px 12px;
+  font-size: 0.82rem;
+}
+.tracks-grid .list-card h3 {
+  font-size: 0.88rem;
+  margin: 0 0 2px;
+}
+.tracks-grid .list-card p {
+  margin: 4px 0 0;
+  line-height: 1.35;
+}
+.tracks-grid .card-head {
+  gap: 4px;
 }
 
 .track-backlog-grid {
@@ -909,7 +1414,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
   margin-top: 14px;
 }
 .note-block {
-  margin-top: 14px;
+  margin: 14px 0;
   padding: 14px;
   border-radius: 14px;
   background: #faf5ed;
@@ -923,7 +1428,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .evidence-mini-guide {
   display: grid;
   gap: 6px;
-  margin-top: 12px;
+  margin: 12px 0;
   padding: 10px 12px;
   border-radius: 12px;
   border: 1px solid rgba(161, 91, 23, 0.12);
@@ -967,29 +1472,29 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 }
 .community-card {
   display: grid;
-  gap: 12px;
-  padding: 16px 18px;
+  gap: 8px;
+  padding: 10px 12px;
 }
 .community-card-top {
   display: flex;
   justify-content: space-between;
   align-items: start;
-  gap: 12px;
+  gap: 8px;
 }
 .community-card-heading h3 {
-  margin: 2px 0 0;
-  font-size: 1.04rem;
-  line-height: 1.15;
+  margin: 1px 0 0;
+  font-size: 0.88rem;
+  line-height: 1.2;
 }
 .community-meta {
-  margin: 4px 0 0;
+  margin: 2px 0 0;
   color: var(--muted);
-  font-size: 0.76rem;
+  font-size: 0.69rem;
   line-height: 1.3;
 }
 .community-card-body {
   display: grid;
-  gap: 10px;
+  gap: 8px;
   grid-template-columns: 1.1fr 0.9fr;
 }
 .community-card-body-compact {
@@ -998,18 +1503,17 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .community-quote-card,
 .community-takeaway-card {
   display: grid;
-  gap: 6px;
-  min-height: 100%;
-  padding: 12px 13px;
-  border-radius: 16px;
+  gap: 4px;
+  padding: 8px 10px;
+  border-radius: 12px;
   border: 1px solid rgba(161, 91, 23, 0.12);
   background: linear-gradient(180deg, rgba(255, 252, 247, 0.98), rgba(246, 235, 216, 0.9));
 }
 .community-quote {
   margin: 0;
   font-family: "Cambria Math", "Times New Roman", serif;
-  font-size: 0.9rem;
-  line-height: 1.42;
+  font-size: 0.78rem;
+  line-height: 1.38;
   color: var(--ink);
 }
 .community-quote-compact,
@@ -1021,22 +1525,22 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 }
 .community-copy {
   margin: 0;
-  font-size: 0.84rem;
-  line-height: 1.45;
+  font-size: 0.74rem;
+  line-height: 1.4;
   color: var(--ink-soft);
 }
 .community-actions-panel {
   display: grid;
-  gap: 8px;
+  gap: 6px;
 }
 .community-action-row {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: 6px;
 }
 .community-action-chip {
-  padding: 6px 10px;
-  font-size: 0.75rem;
+  padding: 4px 8px;
+  font-size: 0.68rem;
   line-height: 1;
 }
 .community-summary-strip .summary-card {
@@ -1500,12 +2004,24 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
   color: #9e4159;
 }
 .run-rail-range {
-  font-size: 0.7rem;
+  display: block;
+  width: 100%;
+  font-size: 0.58rem;
   color: var(--muted);
+  text-align: center;
+  opacity: 0.7;
+  letter-spacing: -0.01em;
 }
 .run-rail-range.power {
+  display: block;
+  width: 100%;
+  font-size: 0.72rem;
   color: var(--accent);
   font-family: "IBM Plex Mono", "Cascadia Code", monospace;
+  text-align: center;
+  font-weight: 600;
+  opacity: 1;
+  margin-top: 2px;
 }
 .run-rail-progress {
   display: flex;
@@ -1640,6 +2156,15 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 }
 .math-operator-banner .orbit-kicker { flex: 0 0 auto; }
 .math-operator-banner .math-expression { font-size: 1rem; }
+.math-operator-banner .katex-block { min-width: 0; overflow: visible; }
+.math-operator-banner .katex-display,
+.math-operator-banner .katex-html,
+.math-operator-banner .katex {
+  overflow: visible !important;
+  margin: 0 !important;
+}
+.math-operator-banner *::-webkit-scrollbar { display: none !important; }
+.math-operator-banner * { scrollbar-width: none !important; }
 
 .ledger-card, .record-formula-card, .equation-card, .record-row {
   border-radius: 18px;
@@ -1661,6 +2186,36 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
   word-break: break-all;
   color: var(--ink);
 }
+
+/* KaTeX block used as math-expression (equation tape) */
+.katex-block.math-expression {
+  font-family: inherit;
+  overflow-x: hidden;
+  overflow-y: hidden;
+  font-size: 1rem;
+  max-width: 100%;
+}
+.katex-block.math-expression .katex { font-size: 1em; }
+.katex-block.math-expression .katex-html { overflow-x: hidden; }
+
+/* KaTeX inline in ledger card (Next Direct Image) */
+.ledger-katex {
+  display: block;
+  font-size: 0.88rem;
+  overflow-x: hidden;
+  overflow-y: hidden;
+  margin-top: 5px;
+  color: var(--muted);
+  word-break: break-all;
+}
+.ledger-katex .katex { font-size: 0.9em; }
+
+/* KaTeX in pinned run ledger (range + milestone) */
+.run-ledger-math {
+  margin: 4px 0 2px;
+  font-size: 1rem;
+}
+.run-ledger-math .katex { font-size: 1em; }
 
 /* ── Live Ledger — fixed height cards ── */
 .live-ledger {
@@ -1852,12 +2407,14 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .equation-step-row strong { color: var(--accent); }
 
 .math-annotation {
+  margin-top: 6px;
   padding-top: 6px;
   border-top: 1px solid rgba(161, 91, 23, 0.1);
-  font-family: "IBM Plex Mono", "Cascadia Code", monospace;
-  font-size: 0.84rem;
-  word-break: break-all;
+  font-size: 0.82rem;
+  color: var(--muted);
+  overflow-x: hidden;
 }
+.math-annotation .katex { font-size: 0.84em; }
 
 /* ── Record Formula Grid — fixed height cards ── */
 .record-formula-grid {
@@ -2175,6 +2732,13 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
   color: var(--muted);
   cursor: default;
 }
+.relation-chip-more {
+  color: var(--accent);
+  font-weight: 600;
+}
+.relation-chip-more:hover {
+  background: rgba(161, 91, 23, 0.08);
+}
 .relation-claim-button {
   padding: 7px 12px;
   font-size: 0.78rem;
@@ -2183,6 +2747,17 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
   display: grid;
   gap: 12px;
   grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+.direction-activity-grid {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin-top: 12px;
+}
+.direction-activity-list {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
 }
 .detail-related-card,
 .detail-preview-card {
@@ -2241,6 +2816,10 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
   padding: 7px 11px;
   font-size: 0.78rem;
 }
+.note-block-compact p {
+  font-size: 0.84rem;
+  line-height: 1.42;
+}
 .artifact-preview {
   margin: 12px 0 0;
   max-height: 360px;
@@ -2275,10 +2854,13 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 /* ── Filter Bar ── */
 .filter-bar {
   display: grid;
-  grid-template-columns: 1.4fr 1fr 1fr auto;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
   gap: 10px;
   align-items: end;
   margin-bottom: 14px;
+}
+.filter-bar > .secondary-button {
+  min-height: 40px;
 }
 .section-subnav {
   display: grid;
@@ -2308,7 +2890,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .section-subnav-button.active {
   border-color: rgba(161, 91, 23, 0.42);
   box-shadow: 0 0 0 2px rgba(161, 91, 23, 0.12), var(--shadow);
-  background: linear-gradient(180deg, rgba(255, 248, 239, 0.99), rgba(240, 223, 193, 0.95));
+  background: linear-gradient(180deg, rgba(255, 252, 247, 0.98), rgba(246, 237, 223, 0.94));
 }
 .section-subnav-top {
   display: flex;
@@ -2526,8 +3108,22 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .meta-line, .checksum {
   font-family: "IBM Plex Mono", "Cascadia Code", monospace;
   font-size: 0.88rem;
+  text-align: left;
 }
 code { font-family: "IBM Plex Mono", "Cascadia Code", monospace; }
+
+/* ── Micro timestamps ── */
+.ts-micro {
+  display: block;
+  font-family: "IBM Plex Mono", "Cascadia Code", monospace;
+  font-size: 0.62rem;
+  color: var(--muted);
+  opacity: 0.7;
+  letter-spacing: 0.02em;
+  line-height: 1.2;
+  margin: 1px 0;
+  white-space: nowrap;
+}
 
 /* ══════════════════════════════════════
    RESPONSIVE
@@ -2548,11 +3144,14 @@ code { font-family: "IBM Plex Mono", "Cascadia Code", monospace; }
   .workspace-rail-left {
     position: fixed;
     top: 14px;
-    width: 278px;
+    width: 310px;
+    max-width: 310px;
     max-height: calc(100vh - 28px);
-    overflow: auto;
+    overflow-y: auto;
+    overflow-x: hidden;
     z-index: 24;
     margin-top: 0;
+    contain: layout paint style;
   }
   .workspace-rail-right {
     right: 16px;
@@ -2640,6 +3239,7 @@ code { font-family: "IBM Plex Mono", "Cascadia Code", monospace; }
   .live-support-grid,
   .live-math-shell,
   .detail-related-grid,
+  .direction-activity-grid,
   .feedback-signal-grid,
   .community-summary-strip,
   .community-card-body,
@@ -2684,9 +3284,1186 @@ code { font-family: "IBM Plex Mono", "Cascadia Code", monospace; }
   .orbit-meta { justify-content: flex-start; margin-top: 8px; }
   .live-math-page .record-formula-grid { grid-template-columns: 1fr; }
   .claim-snapshot-grid { grid-template-columns: 1fr; }
+  .direction-activity-grid { grid-template-columns: 1fr; }
 }
 
 @media (prefers-reduced-motion: reduce) {
   * { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
   .orbit-square-active, .equation-card-active { transform: none !important; }
+}
+
+/* ── Dark mode ─────────────────────────────────────────── */
+
+/* Manual toggle: user clicks Dark */
+:root[data-theme="dark"],
+html[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #1a1410;
+  --panel: #241e18;
+  --panel-soft: #2e261e;
+  --ink: #e8ddd0;
+  --muted: #a0917f;
+  --line: #3d3329;
+  --accent: #d4893a;
+  --accent-soft: #3d2f1e;
+  --good-bg: #14291a;
+  --good-ink: #6ee7a0;
+  --warn-bg: #2d1f0e;
+  --warn-ink: #f9a849;
+  --bad-bg: #2d1418;
+  --bad-ink: #fb7185;
+  --cool-bg: #151e30;
+  --cool-ink: #60a5fa;
+  --cold-bg: #1e222a;
+  --cold-ink: #94a3b8;
+  --shadow: 0 12px 30px rgba(0, 0, 0, 0.35);
+  --shadow-color: rgba(0, 0, 0, 0.5);
+}
+
+/* Auto mode removed — only manual light/dark toggle */
+
+/* Dark body background — manual */
+html[data-theme="dark"] body {
+  background:
+    radial-gradient(circle at top left, rgba(161, 91, 23, 0.12), transparent 30%),
+    radial-gradient(circle at top right, rgba(120, 70, 20, 0.08), transparent 26%),
+    linear-gradient(180deg, #1a1410 0%, #12100c 100%),
+    linear-gradient(rgba(161, 91, 23, 0.04) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(161, 91, 23, 0.04) 1px, transparent 1px);
+  background-size: auto, auto, auto, 42px 42px, 42px 42px;
+}
+html[data-theme="dark"] body::before { opacity: 0.06; }
+
+
+/* Dark mode overrides for focus outlines and active sidebar */
+html[data-theme="dark"] button:focus-visible,
+html[data-theme="dark"] input:focus-visible,
+html[data-theme="dark"] textarea:focus-visible,
+html[data-theme="dark"] select:focus-visible {
+  outline-color: rgba(212, 137, 58, 0.5);
+}
+/* ── Sidebar links: fix cream background → dark ── */
+html[data-theme="dark"] .sidebar-link {
+  background: rgba(255, 250, 243, 0.04) !important;
+  border-color: var(--line) !important;
+  color: var(--ink) !important;
+}
+html[data-theme="dark"] .sidebar-link:hover {
+  background: rgba(212, 137, 58, 0.1) !important;
+}
+html[data-theme="dark"] .sidebar-link small {
+  color: var(--muted) !important;
+}
+/* Active must come AFTER the general rule to win */
+html[data-theme="dark"] .sidebar-link.active {
+  background: linear-gradient(180deg, #d4893a, #b8732e) !important;
+  border-color: #b8732e !important;
+  color: #fff !important;
+}
+html[data-theme="dark"] .sidebar-link.active small {
+  color: rgba(255, 255, 255, 0.85) !important;
+}
+html[data-theme="dark"] .sidebar-runtime {
+  background: rgba(255, 250, 243, 0.04) !important;
+  border-color: var(--line) !important;
+}
+html[data-theme="dark"] .sidebar-runtime-card {
+  background: rgba(255, 250, 243, 0.04) !important;
+  border-color: var(--line) !important;
+}
+html[data-theme="dark"] .sidebar-footer {
+  border-top-color: var(--line) !important;
+}
+html[data-theme="dark"] .sidebar-legal a,
+html[data-theme="dark"] .sidebar-legal span {
+  color: var(--muted) !important;
+}
+html[data-theme="dark"] .legal-separator { color: var(--line) !important; }
+
+/* ══════════════════════════════════════
+   DARK MODE — systematic component overrides
+   Covers all hardcoded rgba(255,...) light backgrounds
+   ══════════════════════════════════════ */
+
+/* Macro: everything that has a border uses dark border */
+html[data-theme="dark"] [class*="-card"],
+html[data-theme="dark"] [class*="-panel"],
+html[data-theme="dark"] [class*="-banner"],
+html[data-theme="dark"] [class*="-strip"],
+html[data-theme="dark"] .panel {
+  border-color: var(--line) !important;
+}
+
+/* Panels and generic cards */
+html[data-theme="dark"] .panel,
+html[data-theme="dark"] article.panel,
+html[data-theme="dark"] .run-rail-card,
+html[data-theme="dark"] .reddit-rail-card,
+html[data-theme="dark"] .direction-panel {
+  background: var(--panel) !important;
+}
+
+/* Summary / stat cards + ALL card types with light backgrounds */
+html[data-theme="dark"] .summary-card,
+html[data-theme="dark"] .sidebar-runtime-card,
+html[data-theme="dark"] .capability-card,
+html[data-theme="dark"] .evidence-card,
+html[data-theme="dark"] .claim-card,
+html[data-theme="dark"] .source-card,
+html[data-theme="dark"] .artifact-card,
+html[data-theme="dark"] .hypothesis-card,
+html[data-theme="dark"] .run-card,
+html[data-theme="dark"] .ledger-card,
+html[data-theme="dark"] .record-formula-card,
+html[data-theme="dark"] .equation-card,
+html[data-theme="dark"] .detail-related-card,
+html[data-theme="dark"] .detail-preview-card,
+html[data-theme="dark"] .community-quote-card,
+html[data-theme="dark"] .community-takeaway-card,
+html[data-theme="dark"] .reddit-post-card,
+html[data-theme="dark"] .reddit-tracked-card,
+html[data-theme="dark"] .list-card,
+html[data-theme="dark"] .empty-state,
+html[data-theme="dark"] .start-card,
+html[data-theme="dark"] .surface-card,
+html[data-theme="dark"] .action-card,
+html[data-theme="dark"] .review-card,
+html[data-theme="dark"] .orbit-provenance-card,
+html[data-theme="dark"] .claim-update-card,
+html[data-theme="dark"] .queue-card,
+html[data-theme="dark"] .legend-card,
+html[data-theme="dark"] .detail-link-summary,
+html[data-theme="dark"] .action-status,
+html[data-theme="dark"] .subpanel {
+  background: var(--panel-soft) !important;
+}
+
+/* Panels (general) */
+html[data-theme="dark"] .panel {
+  background: var(--panel) !important;
+}
+
+/* Section intro */
+html[data-theme="dark"] .section-intro {
+  background: transparent !important;
+}
+
+/* Action status colors preserved */
+html[data-theme="dark"] .action-status-success {
+  background: #0d2318 !important;
+  color: var(--good-ink) !important;
+}
+html[data-theme="dark"] .action-status-error {
+  background: #2d1418 !important;
+  color: var(--bad-ink) !important;
+}
+
+/* Section subnav buttons (the 6 tab cards in Tracks) */
+html[data-theme="dark"] .section-subnav-button {
+  background: var(--panel-soft) !important;
+}
+html[data-theme="dark"] .section-subnav-button.active {
+  background: #3a2a14 !important;
+  border-color: rgba(212, 137, 58, 0.4) !important;
+  box-shadow: 0 0 0 2px rgba(212, 137, 58, 0.15) !important;
+}
+html[data-theme="dark"] .section-subnav-button:hover {
+  background: #2e2214 !important;
+}
+
+/* Track/direction stat cards (the grid in Tracks overview) */
+html[data-theme="dark"] .track-stat-card,
+html[data-theme="dark"] .direction-stat-card,
+html[data-theme="dark"] [class*="track-card"],
+html[data-theme="dark"] [class*="backlog-card"],
+html[data-theme="dark"] .compute-lane-card {
+  background: var(--panel-soft) !important;
+}
+
+/* Hero */
+html[data-theme="dark"] .hero {
+  background: linear-gradient(140deg, #201810 0%, #2a1e12 100%) !important;
+}
+
+/* Banners */
+html[data-theme="dark"] .math-operator-banner {
+  background: #251d10 !important;
+  border-color: #4a3520 !important;
+}
+html[data-theme="dark"] .runtime-banner,
+html[data-theme="dark"] .error-banner,
+html[data-theme="dark"] .info-banner {
+  background: var(--panel-soft) !important;
+}
+
+/* Equation cards */
+html[data-theme="dark"] .equation-card-active {
+  background: #2e2010 !important;
+  border-color: #6b4820 !important;
+}
+
+/* Sidebar */
+html[data-theme="dark"] .sidebar {
+  background: linear-gradient(180deg, #201a14 0%, #18140f 100%) !important;
+}
+
+/* Live math ticker — full dark treatment */
+html[data-theme="dark"] .live-math-ticker,
+html[data-theme="dark"] .math-ticker-bar {
+  background: #1c1510 !important;
+}
+html[data-theme="dark"] .math-ticker-wrap {
+  background: linear-gradient(180deg, #1e1810, #1a140e) !important;
+  border-color: #3a2c1a !important;
+}
+html[data-theme="dark"] .math-ticker-wrap::before {
+  background: linear-gradient(90deg, rgba(26, 20, 14, 0.99), transparent) !important;
+}
+html[data-theme="dark"] .math-ticker-wrap::after {
+  background: linear-gradient(270deg, rgba(26, 20, 14, 0.99), transparent) !important;
+}
+html[data-theme="dark"] .ticker-eq,
+html[data-theme="dark"] .ticker-formula,
+html[data-theme="dark"] .ticker-values {
+  color: var(--muted) !important;
+}
+html[data-theme="dark"] .ticker-formula sub { color: var(--muted) !important; }
+html[data-theme="dark"] .ticker-staff line { stroke: rgba(212, 137, 58, 0.06) !important; }
+
+/* Pinned post (our own) — special golden dark */
+html[data-theme="dark"] .reddit-post-card-own {
+  background: linear-gradient(135deg, #2e1e08 0%, #3a2508 100%) !important;
+  box-shadow: 0 0 0 1.5px rgba(212, 137, 58, 0.4), 0 4px 16px rgba(0,0,0,0.4) !important;
+}
+
+/* Run Navigator active card */
+html[data-theme="dark"] .run-rail-card.active {
+  background: linear-gradient(180deg, rgba(212, 137, 58, 0.2), rgba(58, 38, 14, 0.95)) !important;
+  border-color: var(--accent) !important;
+  box-shadow: 0 0 12px rgba(212, 137, 58, 0.22) !important;
+}
+html[data-theme="dark"] .run-rail-card:hover {
+  background: rgba(255, 248, 236, 0.06) !important;
+  border-color: rgba(212, 137, 58, 0.3) !important;
+}
+
+/* Compute control panel (sidebar budget slider) */
+html[data-theme="dark"] .compute-control-panel {
+  background: var(--panel-soft) !important;
+  border-color: var(--line) !important;
+}
+
+/* Runtime banners (idle = warn amber, live = green) */
+html[data-theme="dark"] .runtime-banner-idle {
+  background: #2a1c09 !important;
+  color: #d97706 !important;
+}
+html[data-theme="dark"] .runtime-banner-live {
+  background: #0d2318 !important;
+  color: var(--good-ink) !important;
+}
+
+/* orbit-note inline annotation */
+html[data-theme="dark"] .orbit-note {
+  background: rgba(255, 250, 243, 0.04) !important;
+  border-color: var(--line) !important;
+  color: var(--muted) !important;
+}
+
+/* Inputs / selects — all types including readonly */
+html[data-theme="dark"] select,
+html[data-theme="dark"] input,
+html[data-theme="dark"] textarea {
+  background: var(--panel-soft) !important;
+  border-color: var(--line) !important;
+  color: var(--ink) !important;
+}
+html[data-theme="dark"] input[type="range"] { accent-color: var(--accent); background: transparent !important; }
+html[data-theme="dark"] input::placeholder,
+html[data-theme="dark"] textarea::placeholder { color: var(--muted) !important; }
+
+/* Summary strip */
+html[data-theme="dark"] .summary-strip,
+html[data-theme="dark"] .evidence-summary-strip {
+  background: transparent !important;
+}
+
+/* Formula banner in overview */
+html[data-theme="dark"] .formula-banner {
+  background: #251d10 !important;
+  border-color: #4a3520 !important;
+}
+
+/* Loading/setup banners */
+html[data-theme="dark"] .loading-banner,
+html[data-theme="dark"] .setup-banner {
+  background: var(--panel-soft) !important;
+  border-color: var(--line) !important;
+  color: var(--ink) !important;
+}
+
+/* Record row */
+html[data-theme="dark"] .record-row {
+  background: var(--panel-soft) !important;
+  border-color: var(--line) !important;
+}
+
+/* Orbit pill / button */
+html[data-theme="dark"] .orbit-pill {
+  background: var(--panel-soft) !important;
+  border-color: var(--line) !important;
+  color: var(--muted) !important;
+}
+html[data-theme="dark"] .orbit-pill.active {
+  background: #3a2a14 !important;
+  border-color: rgba(212, 137, 58, 0.4) !important;
+  color: var(--accent) !important;
+}
+
+/* Orbit squares (frame grid in Live Math) */
+html[data-theme="dark"] .orbit-square {
+  background: var(--panel-soft) !important;
+  border-color: var(--line) !important;
+  color: var(--ink) !important;
+}
+html[data-theme="dark"] .orbit-square-active {
+  background: #3a2a14 !important;
+  border-color: rgba(212, 137, 58, 0.5) !important;
+  color: var(--accent) !important;
+}
+
+/* Detail link buttons */
+html[data-theme="dark"] .detail-link-button {
+  background: var(--panel-soft) !important;
+  border-color: var(--line) !important;
+  color: var(--ink) !important;
+}
+html[data-theme="dark"] .detail-link-button.active {
+  background: #3a2a14 !important;
+  border-color: rgba(212, 137, 58, 0.4) !important;
+}
+
+/* Tags / status pills that have hardcoded light backgrounds */
+html[data-theme="dark"] .status-pill {
+  filter: brightness(0.8) saturate(0.9);
+}
+
+/* Buttons */
+html[data-theme="dark"] .secondary-button {
+  background: var(--panel-soft) !important;
+  border-color: var(--line) !important;
+  color: var(--ink) !important;
+}
+html[data-theme="dark"] .secondary-button:hover {
+  background: var(--accent-soft) !important;
+  color: var(--accent) !important;
+}
+
+/* Chips / pills */
+html[data-theme="dark"] .meta-chip,
+html[data-theme="dark"] .reddit-meta-chip,
+html[data-theme="dark"] .flair-chip {
+  background: rgba(212, 137, 58, 0.12) !important;
+  color: var(--muted) !important;
+}
+
+/* Live status cards (4 cards in Live Math strip) */
+html[data-theme="dark"] .live-status-card {
+  background: var(--panel-soft) !important;
+  border-color: var(--line) !important;
+  box-shadow: none !important;
+}
+
+/* note-block (Fast reading rule, direction notes, etc.) */
+html[data-theme="dark"] .note-block {
+  background: var(--panel-soft) !important;
+  border-color: var(--line) !important;
+}
+html[data-theme="dark"] .note-block-danger {
+  background: #2d1418 !important;
+  border-color: rgba(204, 77, 110, 0.3) !important;
+}
+
+/* evidence-mini-guide (guide text box) */
+html[data-theme="dark"] .evidence-mini-guide {
+  background: var(--panel-soft) !important;
+  border-color: var(--line) !important;
+}
+
+/* baseline-note-block */
+html[data-theme="dark"] .baseline-note-block {
+  background: var(--panel-soft) !important;
+  border-color: var(--line) !important;
+}
+
+/* Track mini rows (Task split direction breakdown bars) */
+html[data-theme="dark"] .track-mini-row {
+  background: var(--panel-soft) !important;
+  border-color: var(--line) !important;
+  color: var(--muted) !important;
+}
+
+/* relation chips (claim-run link chips) */
+html[data-theme="dark"] .relation-chip {
+  background: var(--panel-soft) !important;
+  border-color: var(--line) !important;
+  color: var(--ink) !important;
+}
+html[data-theme="dark"] .relation-chip:hover {
+  border-color: var(--accent) !important;
+  color: var(--accent) !important;
+}
+html[data-theme="dark"] .relation-chip-more {
+  background: rgba(212, 137, 58, 0.1) !important;
+  border-color: rgba(212, 137, 58, 0.3) !important;
+  color: var(--accent) !important;
+}
+
+/* ── Remaining light-background overrides (comprehensive audit) ── */
+
+/* Reddit signal + alert chips */
+html[data-theme="dark"] .reddit-signal-review,
+html[data-theme="dark"] .reddit-meta-chip-alert {
+  background: #2d1418 !important;
+  color: var(--bad-ink) !important;
+}
+
+/* Hero spotlight */
+html[data-theme="dark"] .hero-spotlight {
+  background: var(--panel-soft) !important;
+  border-color: var(--line) !important;
+}
+
+/* Baseline source links (Sources page) */
+html[data-theme="dark"] .baseline-source-link {
+  background: var(--panel-soft) !important;
+  border-color: var(--line) !important;
+}
+html[data-theme="dark"] .baseline-source-link:hover {
+  background: #2e2214 !important;
+}
+
+/* Feedback comment quote */
+html[data-theme="dark"] .feedback-comment-quote {
+  background: var(--panel-soft) !important;
+  border-color: var(--line) !important;
+}
+
+/* Live nav bar container + buttons + chips */
+html[data-theme="dark"] .live-nav-bar {
+  background: var(--panel) !important;
+  border-color: var(--line) !important;
+  box-shadow: none !important;
+}
+html[data-theme="dark"] .live-nav-button,
+html[data-theme="dark"] .live-nav-chip {
+  background: var(--panel-soft) !important;
+  border-color: var(--line) !important;
+  color: var(--ink) !important;
+}
+html[data-theme="dark"] .live-nav-button.active,
+html[data-theme="dark"] .live-nav-chip.active {
+  background: #3a2a14 !important;
+  border-color: rgba(212, 137, 58, 0.4) !important;
+  color: var(--accent) !important;
+}
+
+/* Orbit meta spans */
+html[data-theme="dark"] .orbit-meta span {
+  background: var(--panel-soft) !important;
+  border-color: var(--line) !important;
+  color: var(--muted) !important;
+}
+
+/* Orbit panel full background */
+html[data-theme="dark"] .orbit-panel {
+  background: var(--panel) !important;
+  border-color: var(--line) !important;
+}
+
+/* Rubric badge (hypothesis rubric) */
+html[data-theme="dark"] .rubric-badge {
+  background: var(--panel-soft) !important;
+  color: var(--muted) !important;
+}
+
+/* Relation row (claim/run link rows) */
+html[data-theme="dark"] .relation-row {
+  background: var(--panel-soft) !important;
+  border-color: var(--line) !important;
+}
+
+/* Artifact preview panel */
+html[data-theme="dark"] .artifact-preview {
+  background: var(--panel) !important;
+  border-color: var(--line) !important;
+  color: var(--ink) !important;
+}
+
+/* Review history items */
+html[data-theme="dark"] .review-history-item {
+  background: var(--panel-soft) !important;
+  border-color: var(--line) !important;
+}
+
+/* Timeline items (community) */
+html[data-theme="dark"] .timeline li {
+  background: var(--panel-soft) !important;
+  border-color: var(--line) !important;
+}
+
+/* Text colour adjustments */
+html[data-theme="dark"] .eyebrow,
+html[data-theme="dark"] .sidebar-kicker,
+html[data-theme="dark"] .orbit-kicker { color: var(--accent); }
+
+/* Paper page — comprehensive dark mode */
+html[data-theme="dark"] .tab-panel-paper,
+html[data-theme="dark"] .paper-page { background: #111009 !important; }
+
+html[data-theme="dark"] .paper-sheet {
+  background: #1e1a12 !important;
+  color: #ddd0b8 !important;
+  box-shadow: 0 4px 40px rgba(0,0,0,0.5) !important;
+}
+
+/* Make all paper text inherit the dark sheet colour by default */
+html[data-theme="dark"] .paper-sheet * { color: inherit; }
+
+/* Specific text overrides */
+html[data-theme="dark"] .paper-title { color: #f0e6d0 !important; }
+html[data-theme="dark"] .paper-subtitle { color: #c9b890 !important; }
+html[data-theme="dark"] .paper-classification { color: #c9a85a !important; }
+html[data-theme="dark"] .paper-affiliation { color: #a08858 !important; }
+html[data-theme="dark"] .paper-dateline { color: #9a8060 !important; }
+html[data-theme="dark"] .paper-abstract-heading { color: #b89860 !important; }
+html[data-theme="dark"] .paper-abstract { color: #d0c4a8 !important; }
+html[data-theme="dark"] .paper-keywords { color: #a08858 !important; }
+html[data-theme="dark"] .paper-section-heading { color: #f0e6d0 !important; }
+html[data-theme="dark"] .paper-section-number { color: #c9a85a !important; }
+html[data-theme="dark"] .paper-body { color: #d0c4a8 !important; }
+html[data-theme="dark"] .paper-bullet-list li { color: #d0c4a8 !important; }
+html[data-theme="dark"] .paper-numbered-list li { color: #d0c4a8 !important; }
+html[data-theme="dark"] .paper-formula-label { color: #9a8060 !important; }
+html[data-theme="dark"] .paper-entry-label { color: #e0c898 !important; }
+html[data-theme="dark"] .paper-entry-date,
+html[data-theme="dark"] .paper-entry-run { color: #9a8060 !important; }
+html[data-theme="dark"] .paper-ref-item { color: #b8a880 !important; }
+html[data-theme="dark"] .paper-footer-line { color: #8a7858 !important; }
+
+/* Code / formula blocks */
+html[data-theme="dark"] .paper-code-block,
+html[data-theme="dark"] .paper-formula-expr {
+  background: #2a2418 !important;
+  border-color: #4a3820 !important;
+  color: #ddd0b8 !important;
+}
+html[data-theme="dark"] .paper-formula-katex {
+  background: #2a2418 !important;
+  border-color: #4a3820 !important;
+}
+
+/* WOW entries */
+html[data-theme="dark"] .paper-entry {
+  background: #252010 !important;
+  border-color: #5a4020 !important;
+}
+html[data-theme="dark"] .paper-entry-repro {
+  background: #2e2410 !important;
+  color: #c9a870 !important;
+}
+
+/* Rules */
+html[data-theme="dark"] .paper-rule { border-color: #4a3820 !important; }
+html[data-theme="dark"] .paper-footer { border-top-color: #4a3820 !important; }
+
+/* Toolbar */
+html[data-theme="dark"] .paper-toolbar-version,
+html[data-theme="dark"] .paper-toolbar-status,
+html[data-theme="dark"] .paper-toolbar-updated {
+  color: #c9a85a !important;
+  background: rgba(212, 137, 58, 0.12) !important;
+}
+html[data-theme="dark"] .paper-print-btn {
+  background: #2a2418 !important;
+  border-color: rgba(212, 137, 58, 0.4) !important;
+  color: var(--accent) !important;
+}
+html[data-theme="dark"] .paper-print-btn:hover {
+  background: rgba(212, 137, 58, 0.15) !important;
+}
+
+/* Live activity strip — explicit dark polish (vars alone were ok; this matches warm + lime header) */
+html[data-theme="dark"] .live-activity-panel {
+  background: linear-gradient(165deg, var(--panel) 0%, var(--panel-soft) 100%) !important;
+  box-shadow:
+    0 6px 28px rgba(0, 0, 0, 0.38),
+    0 0 0 1px rgba(212, 137, 58, 0.12) !important;
+}
+html[data-theme="dark"] .live-activity-row {
+  background: rgba(0, 0, 0, 0.22) !important;
+  border-color: var(--line) !important;
+}
+html[data-theme="dark"] .live-activity-title {
+  color: var(--good-ink) !important;
+}
+html[data-theme="dark"] .live-activity-pct {
+  color: var(--ink) !important;
+}
+html[data-theme="dark"] .live-activity-bar {
+  background: rgba(0, 0, 0, 0.45) !important;
+}
+html[data-theme="dark"] .live-dot,
+html[data-theme="dark"] .live-dot-sm {
+  background: var(--good-ink) !important;
+  box-shadow: 0 0 8px rgba(110, 231, 160, 0.4) !important;
+}
+
+html[data-theme="dark"] .logs-panel {
+  box-shadow: 0 -10px 40px var(--shadow-color, rgba(0, 0, 0, 0.5)) !important;
+}
+
+/* Replicate key overrides for auto-dark (OS preference, no manual toggle) */
+/* prefers-color-scheme auto removed */
+
+.theme-toggle {
+  background: var(--panel-soft);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 4px 10px;
+  color: var(--muted);
+  font-size: 0.75rem;
+  cursor: pointer;
+  transition: background 0.15s;
+  white-space: nowrap;
+  width: 100%;
+  text-align: left;
+}
+.theme-toggle:hover {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.compute-startstop {
+  margin-bottom: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.danger-button {
+  background: var(--color-red, #dc2626);
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  padding: 0.5rem 1rem;
+  cursor: pointer;
+  font-weight: 600;
+  width: 100%;
+  text-align: center;
+}
+.danger-button:hover:not(:disabled) {
+  background: #b91c1c;
+}
+.danger-button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.primary-button {
+  background: var(--color-accent, #2563eb);
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  padding: 0.5rem 1rem;
+  cursor: pointer;
+  font-weight: 600;
+  width: 100%;
+  text-align: center;
+}
+.primary-button:hover:not(:disabled) {
+  background: #1d4ed8;
+}
+.primary-button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.compute-sliders-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+/* ══════════════════════════════════════
+   RESEARCH PAPER PAGE
+   A4 academic design, print-ready
+   ══════════════════════════════════════ */
+
+.tab-panel-paper {
+  padding: 0 !important;
+  background: #e8e4dc !important;
+}
+
+.paper-page {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  min-height: 100%;
+  padding: 32px 24px 64px;
+  background: #e8e4dc;
+  gap: 0;
+}
+
+.paper-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  width: 100%;
+  max-width: 794px;
+  margin-bottom: 18px;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.paper-toolbar-meta {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.paper-toolbar-version,
+.paper-toolbar-status,
+.paper-toolbar-updated {
+  font-size: 0.69rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #6b5c40;
+  padding: 3px 8px;
+  border-radius: 6px;
+  background: rgba(161, 91, 23, 0.1);
+}
+
+.paper-print-btn {
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  padding: 7px 16px;
+  border-radius: 8px;
+  border: 1.5px solid rgba(161, 91, 23, 0.3);
+  background: #fff;
+  color: var(--accent);
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+.paper-print-btn:hover {
+  background: rgba(161, 91, 23, 0.07);
+  border-color: var(--accent);
+}
+
+/* ── The A4 sheet ── */
+.paper-sheet {
+  width: 100%;
+  max-width: 794px;
+  background: #fffef9;
+  box-shadow: 0 4px 40px rgba(0, 0, 0, 0.18), 0 1px 4px rgba(0, 0, 0, 0.08);
+  padding: 72px 80px 80px;
+  font-family: "Georgia", "Times New Roman", "Cambria", serif;
+  font-size: 10.5pt;
+  line-height: 1.65;
+  color: #1a1208;
+  position: relative;
+}
+
+/* ── Header ── */
+.paper-classification {
+  font-size: 7.5pt;
+  font-family: "Helvetica Neue", Arial, sans-serif;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: #8b6a32;
+  margin-bottom: 14px;
+}
+
+.paper-title {
+  font-size: 18pt;
+  font-weight: 700;
+  line-height: 1.18;
+  color: #0e0901;
+  margin: 0 0 10px;
+  letter-spacing: -0.01em;
+}
+
+.paper-subtitle {
+  font-size: 11pt;
+  font-style: italic;
+  color: #4a3b1e;
+  margin: 0 0 20px;
+  line-height: 1.4;
+}
+
+.paper-authors {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 10px;
+}
+
+.paper-author {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.paper-author strong {
+  font-size: 10.5pt;
+}
+
+.paper-affiliation {
+  font-size: 8.5pt;
+  color: #6b5030;
+  font-style: italic;
+  display: block;
+}
+
+.paper-dateline {
+  font-size: 8pt;
+  color: #8b7040;
+  font-family: "Helvetica Neue", Arial, sans-serif;
+  margin-top: 8px;
+}
+
+/* ── Rule ── */
+.paper-rule {
+  border: none;
+  border-top: 1px solid #c9b88a;
+  margin: 22px 0;
+}
+
+/* ── Abstract ── */
+.paper-abstract-section {
+  margin: 0 12px;
+}
+
+.paper-abstract-heading {
+  font-size: 8.5pt;
+  font-family: "Helvetica Neue", Arial, sans-serif;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #6b5030;
+  margin: 0 0 8px;
+}
+
+.paper-abstract {
+  font-size: 9.5pt;
+  line-height: 1.58;
+  color: #2a1e08;
+  margin: 0 0 8px;
+  text-align: justify;
+  hyphens: none;
+  overflow-wrap: normal;
+  word-break: normal;
+}
+
+.paper-keywords {
+  font-size: 8.5pt;
+  color: #6b5030;
+  margin: 0;
+}
+
+/* ── Sections ── */
+.paper-section {
+  margin-top: 28px;
+}
+
+.paper-section-heading {
+  font-size: 12pt;
+  font-weight: 700;
+  color: #0e0901;
+  margin: 0 0 12px;
+  line-height: 1.2;
+  letter-spacing: -0.005em;
+}
+
+.paper-section-number {
+  color: #8b6a32;
+}
+
+.paper-body {
+  font-size: 10.5pt;
+  line-height: 1.65;
+  color: #1a1208;
+  margin: 0 0 10px;
+  text-align: justify;
+  hyphens: none;
+  overflow-wrap: normal;
+  word-break: normal;
+}
+
+.paper-code-block {
+  font-family: "Courier New", "Lucida Console", monospace;
+  font-size: 9pt;
+  line-height: 1.55;
+  background: #f5f0e6;
+  border: 1px solid #d9c99a;
+  border-left: 3px solid #c9a85a;
+  padding: 10px 14px;
+  border-radius: 4px;
+  margin: 10px 0;
+  white-space: pre-wrap;
+  word-break: normal;
+  overflow-wrap: break-word;
+  color: #1a1208;
+}
+
+.paper-bullet-list {
+  margin: 8px 0;
+  padding-left: 22px;
+}
+
+.paper-bullet-list li {
+  font-size: 10.5pt;
+  line-height: 1.6;
+  margin-bottom: 4px;
+  color: #1a1208;
+}
+
+.paper-numbered-list {
+  margin: 8px 0;
+  padding-left: 22px;
+}
+
+.paper-numbered-list li {
+  font-size: 10.5pt;
+  line-height: 1.6;
+  margin-bottom: 6px;
+  color: #1a1208;
+  text-align: justify;
+}
+
+/* ── Inline math ── */
+.paper-inline-katex {
+  display: inline;
+}
+.paper-inline-katex .katex {
+  font-size: 1em;
+}
+
+/* ── Formulas ── */
+.paper-formula-block {
+  display: flex;
+  align-items: baseline;
+  gap: 16px;
+  margin: 14px 0 14px 24px;
+}
+
+.paper-formula-expr {
+  font-family: "Courier New", "Lucida Console", monospace;
+  font-size: 10pt;
+  background: #f5f0e6;
+  padding: 6px 14px;
+  border-radius: 4px;
+  border: 1px solid #d9c99a;
+  color: #1a1208;
+  flex: 1;
+  text-align: center;
+  letter-spacing: 0.02em;
+}
+.paper-formula-katex {
+  flex: 1;
+  text-align: center;
+  background: #f5f0e6;
+  padding: 10px 16px;
+  border-radius: 4px;
+  border: 1px solid #d9c99a;
+  overflow-x: auto;
+}
+
+.paper-formula-label {
+  font-size: 8.5pt;
+  color: #8b7040;
+  font-style: italic;
+  flex-shrink: 0;
+}
+
+/* ── WOW Entries (Section 5) ── */
+.paper-entries {
+  display: grid;
+  gap: 16px;
+  margin-top: 14px;
+}
+
+.paper-entry {
+  border: 1px solid #c9b88a;
+  border-left: 3px solid #8b6a32;
+  padding: 12px 16px;
+  border-radius: 0 6px 6px 0;
+  background: #fdf8ee;
+}
+
+.paper-entry-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+  flex-wrap: wrap;
+}
+
+.paper-entry-label {
+  font-size: 9pt;
+  font-weight: 700;
+  color: #4a3010;
+  font-family: "Helvetica Neue", Arial, sans-serif;
+  letter-spacing: 0.04em;
+}
+
+.paper-entry-date,
+.paper-entry-run {
+  font-size: 8pt;
+  color: #8b7040;
+  font-family: "Helvetica Neue", Arial, sans-serif;
+}
+
+.paper-entry-repro {
+  font-size: 8.5pt;
+  color: #5a4020;
+  background: #f0e8d4;
+  padding: 5px 10px;
+  border-radius: 4px;
+  margin-top: 6px;
+}
+
+.paper-repro-label {
+  font-weight: 700;
+}
+
+/* ── References ── */
+.paper-references {
+  margin-top: 24px;
+}
+
+.paper-ref-list {
+  margin: 8px 0 0;
+  padding-left: 22px;
+}
+
+.paper-ref-item {
+  font-size: 9pt;
+  line-height: 1.55;
+  color: #3a2e18;
+  margin-bottom: 6px;
+}
+
+/* ── Footer ── */
+.paper-footer {
+  margin-top: 32px;
+  padding-top: 12px;
+  border-top: 1px solid #c9b88a;
+  text-align: center;
+}
+
+.paper-footer-line {
+  font-size: 7.5pt;
+  color: #8b7040;
+  font-family: "Helvetica Neue", Arial, sans-serif;
+  line-height: 1.5;
+}
+
+.paper-footer-note {
+  font-style: italic;
+  margin-top: 3px;
+}
+
+/* ── Loading / Error states ── */
+.paper-loading,
+.paper-error {
+  font-size: 0.88rem;
+  color: var(--muted);
+  padding: 40px;
+}
+
+/* ════════════════════════════════
+   PRINT STYLES
+   Perfect A4 PDF via Ctrl+P
+   ════════════════════════════════ */
+@media print {
+  /* ── Isolate: hide the entire page except the paper sheet ── */
+  body {
+    background: #fff !important;
+    background-image: none !important;
+    margin: 0 !important;
+    padding: 0 !important;
+  }
+  body::before { display: none !important; }
+
+  /* Hide everything that is NOT the paper sheet */
+  .sidebar,
+  .workspace-rail,
+  .page-header,
+  .paper-toolbar,
+  .no-print,
+  .math-ticker-wrap,
+  .live-math-ticker,
+  .math-ticker-bar,
+  .global-math-ticker-shell,
+  .mobile-topbar { display: none !important; }
+
+  /* Reset page-shell layout */
+  .page-shell {
+    width: 100% !important;
+    margin: 0 !important;
+    padding: 0 !important;
+  }
+  .page-shell::before,
+  .page-shell::after { display: none !important; }
+
+  /* Collapse grid to single column */
+  .app-shell {
+    display: block !important;
+  }
+  .workspace-shell {
+    display: block !important;
+  }
+  .workspace-primary {
+    width: 100% !important;
+    min-width: 0 !important;
+  }
+
+  /* Paper page container */
+  .tab-panel,
+  .tab-panel-paper {
+    padding: 0 !important;
+    background: none !important;
+    border: none !important;
+    box-shadow: none !important;
+  }
+  .paper-page {
+    padding: 0 !important;
+    background: #fff !important;
+    display: block !important;
+  }
+
+  /* ── The paper sheet: A4 print ── */
+  .paper-sheet {
+    box-shadow: none !important;
+    padding: 20mm 22mm 24mm !important;
+    max-width: none !important;
+    width: 100% !important;
+    font-size: 10pt !important;
+    background: #fff !important;
+    color: #1a1208 !important;
+    margin: 0 !important;
+  }
+
+  .paper-title { font-size: 16pt !important; }
+  .paper-section-heading { font-size: 11pt !important; }
+
+  .paper-section { page-break-inside: avoid; }
+  .paper-formula-block,
+  .paper-entry,
+  .paper-code-block { page-break-inside: avoid; }
 }

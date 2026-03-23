@@ -1,24 +1,26 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none">
+  <title>Collatz Lab - hailstone path toward 1</title>
   <defs>
-    <linearGradient id="bg" x1="10" y1="8" x2="56" y2="58" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#FFF8EE"/>
-      <stop offset="1" stop-color="#F0DFC0"/>
+    <linearGradient id="fav-bg" x1="6" y1="4" x2="58" y2="62" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFFCF7"/>
+      <stop offset="0.45" stop-color="#F6EBD8"/>
+      <stop offset="1" stop-color="#E2CEAC"/>
     </linearGradient>
-    <linearGradient id="accent" x1="18" y1="16" x2="44" y2="46" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#CB7A26"/>
-      <stop offset="1" stop-color="#8D4A14"/>
+    <linearGradient id="fav-orbit" x1="8" y1="46" x2="54" y2="14" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#D4893A"/>
+      <stop offset="0.45" stop-color="#A15B17"/>
+      <stop offset="1" stop-color="#5C3310"/>
     </linearGradient>
   </defs>
-  <rect x="4" y="4" width="56" height="56" rx="16" fill="url(#bg)"/>
-  <rect x="4.75" y="4.75" width="54.5" height="54.5" rx="15.25" stroke="#D7BC8D" stroke-opacity=".75" stroke-width="1.5"/>
-  <path d="M16 18H48M16 32H48M16 46H48M18 16V48M32 16V48M46 16V48" stroke="#C79E61" stroke-opacity=".14" stroke-width="1.25"/>
-
-  <rect x="17" y="16" width="10" height="10" rx="3.2" fill="url(#accent)"/>
-  <rect x="29" y="16" width="10" height="10" rx="3.2" fill="#FFF7EC" stroke="#D6B078"/>
-  <rect x="17" y="28" width="10" height="10" rx="3.2" fill="#FFF7EC" stroke="#D6B078"/>
-  <rect x="17" y="40" width="10" height="10" rx="3.2" fill="#FFF7EC" stroke="#D6B078"/>
-  <rect x="29" y="40" width="10" height="10" rx="3.2" fill="#FFF7EC" stroke="#D6B078"/>
-
-  <path d="M42 22H47.5C50.5376 22 53 24.4624 53 27.5V36.5C53 39.5376 50.5376 42 47.5 42H42" stroke="#8D4A14" stroke-width="3" stroke-linecap="round"/>
-  <circle cx="39" cy="32" r="3.5" fill="#CB7A26"/>
+  <rect width="64" height="64" rx="15" fill="url(#fav-bg)"/>
+  <rect x="1.25" y="1.25" width="61.5" height="61.5" rx="14" stroke="#C9A66E" stroke-opacity="0.55" stroke-width="1.25"/>
+  <path
+    d="M 10 41 C 12 22 20 14 30 18 C 38 21 44 12 54 22 C 59 28 56 40 46 46 C 41.5 48.5 35 46.5 28.5 42.5 C 25 40 26 36 32 32"
+    fill="none"
+    stroke="url(#fav-orbit)"
+    stroke-width="3.25"
+    stroke-linecap="round"
+    stroke-linejoin="round"/>
+  <circle cx="10" cy="41" r="3" fill="#6B3A0F" stroke="#F4E4C8" stroke-width="0.75"/>
+  <circle cx="32" cy="32" r="3.6" fill="#FFF5E6" stroke="#A15B17" stroke-width="1"/>
 </svg>

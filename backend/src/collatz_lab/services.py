@@ -1,19 +1,27 @@
 from __future__ import annotations
 
 import json
+import logging
 import math
 import os
 import random as _random
 import time
+import traceback as _traceback_mod
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import asdict, dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 
+from .logutil import silence_numba_cuda_info
 from .hardware import (
     CPU_ACCELERATED_KERNEL,
+    CPU_BARINA_KERNEL,
     CPU_DIRECT_KERNEL,
     CPU_PARALLEL_KERNEL,
     CPU_PARALLEL_ODD_KERNEL,
+    CPU_SIEVE_KERNEL,
     GPU_KERNEL,
+    GPU_SIEVE_KERNEL,
     gpu_execution_ready,
 )
 
@@ -32,9 +40,46 @@ except Exception:  # pragma: no cover - optional GPU dependency
 from .repository import LabRepository, sha256_text, utc_now
 from .schemas import ArtifactKind, ComputeProfile, ModularProbeResult, Run, RunStatus
 
+logger = logging.getLogger("collatz_lab.services")
+
+class _CheckpointWriter:
+    """Async DB checkpoint writer for execute_run.
+
+    Runs ``repository.update_run`` in a single background thread so the
+    GPU (or CPU kernel) can start the next batch while SQLite commits
+    the previous one.
+
+    At most one write is in-flight at a time.  ``drain()`` blocks until
+    the pending write completes.  This guarantees crash-safety: if the
+    process dies mid-batch, the *previous* checkpoint is already committed.
+    """
+
+    def __init__(self) -> None:
+        self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="checkpoint")
+        self._pending: Future | None = None
+
+    def drain(self) -> None:
+        """Block until the in-flight write finishes.  Re-raises on failure."""
+        if self._pending is not None:
+            self._pending.result()
+            self._pending = None
+
+    def submit(self, repository: LabRepository, run_id: str, **kwargs) -> None:
+        """Drain the previous write, then submit a new one."""
+        self.drain()
+        self._pending = self._executor.submit(repository.update_run, run_id, **kwargs)
+
+    def shutdown(self) -> None:
+        """Drain pending work and shut down the thread pool."""
+        self.drain()
+        self._executor.shutdown(wait=True)
+
+
 INT64_MAX = (1 << 63) - 1
 COLLATZ_INT64_ODD_STEP_LIMIT = (INT64_MAX - 1) // 3
 OVERFLOW_RECOVERY_OWNER = "overflow-recovery"
+LEGACY_VALIDATION_RERUN_OWNER = "legacy-revalidation"
+LEGACY_VALIDATION_RERUN_PREFIX = "legacy-rerun-"
 # Safety bound for GPU/parallel kernels: the longest known Collatz orbit
 # for seeds below 2^64 converges well within 2500 steps.  This generous
 # limit prevents GPU thread hangs if a bug or counterexample is found.
@@ -328,6 +373,506 @@ if np is not None and njit is not None:  # pragma: no branch - import guarded ab
 
         return total_steps, stopping_steps, max_excursions
 
+    @njit(cache=True, parallel=True)
+    def _collatz_metrics_parallel_descent(first_value, size):
+        """Standard Collatz until first descent below the original seed."""
+        total_steps = np.empty(size, dtype=np.int32)
+        stopping_steps = np.empty(size, dtype=np.int32)
+        max_excursions = np.empty(size, dtype=np.int64)
+
+        for index in prange(size):
+            current = np.int64(first_value + index)
+            original = current
+
+            if original <= 1:
+                total_steps[index] = np.int32(0)
+                stopping_steps[index] = np.int32(0)
+                max_excursions[index] = original
+                continue
+
+            steps = np.int32(0)
+            max_excursion = current
+
+            while current >= original and steps < MAX_KERNEL_STEPS:
+                if current & 1 == 0:
+                    current >>= 1
+                    steps += 1
+                else:
+                    if current > COLLATZ_INT64_ODD_STEP_LIMIT:
+                        steps = np.int32(-1)
+                        max_excursion = np.int64(-1)
+                        break
+                    current = 3 * current + 1
+                    steps += 1
+                    if current > max_excursion:
+                        max_excursion = current
+                    while current & 1 == 0 and current >= original:
+                        current >>= 1
+                        steps += 1
+
+                if current > max_excursion:
+                    max_excursion = current
+
+            if current >= original and steps >= MAX_KERNEL_STEPS:
+                steps = np.int32(-1)
+                max_excursion = np.int64(-1)
+
+            total_steps[index] = steps
+            stopping_steps[index] = steps
+            max_excursions[index] = max_excursion
+
+        return total_steps, stopping_steps, max_excursions
+
+    @njit(cache=True, parallel=True)
+    def _collatz_metrics_parallel_descent_odd(first_odd, odd_count):
+        """Odd-only standard Collatz until first descent below the seed."""
+        total_steps = np.empty(odd_count, dtype=np.int32)
+        stopping_steps = np.empty(odd_count, dtype=np.int32)
+        max_excursions = np.empty(odd_count, dtype=np.int64)
+
+        for index in prange(odd_count):
+            current = np.int64(first_odd + 2 * index)
+            original = current
+
+            if original <= 1:
+                total_steps[index] = np.int32(0)
+                stopping_steps[index] = np.int32(0)
+                max_excursions[index] = original
+                continue
+
+            steps = np.int32(0)
+            max_excursion = current
+
+            while current >= original and steps < MAX_KERNEL_STEPS:
+                if current & 1 == 0:
+                    current >>= 1
+                    steps += 1
+                else:
+                    if current > COLLATZ_INT64_ODD_STEP_LIMIT:
+                        steps = np.int32(-1)
+                        max_excursion = np.int64(-1)
+                        break
+                    current = 3 * current + 1
+                    steps += 1
+                    if current > max_excursion:
+                        max_excursion = current
+                    while current & 1 == 0 and current >= original:
+                        current >>= 1
+                        steps += 1
+
+                if current > max_excursion:
+                    max_excursion = current
+
+            if current >= original and steps >= MAX_KERNEL_STEPS:
+                steps = np.int32(-1)
+                max_excursion = np.int64(-1)
+
+            total_steps[index] = steps
+            stopping_steps[index] = steps
+            max_excursions[index] = max_excursion
+
+        return total_steps, stopping_steps, max_excursions
+
+
+# ── Sieve shortcut tables ─────────────────────────────────────────
+# Process SIEVE_K "combined Collatz steps" per table lookup.
+# A combined step: if odd → (3n+1)/2, if even → n/2.
+# After k combined steps on n = 2^k * q + b:
+#   result = SIEVE_MUL[b] * q + SIEVE_OFF[b]
+# This replaces k individual steps with one multiply + add.
+
+SIEVE_K = 16
+_SIEVE_SIZE = 1 << SIEVE_K
+_SIEVE_MASK = _SIEVE_SIZE - 1
+
+
+def _build_sieve_tables(k: int = SIEVE_K):
+    """Build shortcut lookup tables for k-bit combined Collatz steps.
+
+    Returns (multipliers, offsets, odd_counts, safe_limits) as numpy int64/int32 arrays.
+    """
+    size = 1 << k
+    multipliers = np.empty(size, dtype=np.int64)
+    offsets = np.empty(size, dtype=np.int64)
+    odd_counts = np.empty(size, dtype=np.int32)
+    safe_limits = np.empty(size, dtype=np.int64)
+
+    for b in range(size):
+        # Simulate k combined steps on b (q=0 case)
+        val_lo = b
+        odds = 0
+        for _ in range(k):
+            if val_lo & 1:
+                val_lo = (3 * val_lo + 1) >> 1
+                odds += 1
+            else:
+                val_lo >>= 1
+
+        # Simulate k combined steps on b + 2^k (q=1 case)
+        val_hi = b + size
+        for _ in range(k):
+            if val_hi & 1:
+                val_hi = (3 * val_hi + 1) >> 1
+            else:
+                val_hi >>= 1
+
+        mul = val_hi - val_lo
+        offsets[b] = val_lo
+        multipliers[b] = mul
+        odd_counts[b] = odds
+        safe_limits[b] = INT64_MAX // mul if mul > 0 else INT64_MAX
+
+    return multipliers, offsets, odd_counts, safe_limits
+
+
+_sieve_cache: tuple | None = None
+
+
+def _get_sieve_tables():
+    global _sieve_cache
+    if _sieve_cache is None:
+        _sieve_cache = _build_sieve_tables()
+    return _sieve_cache
+
+
+# ── Powers-of-3 table for Barina's domain-switching algorithm ──────
+# Only need entries up to the max possible CTZ of an int64 value (63).
+_POW3_SIZE = 64
+_pow3_cache = None
+
+
+def _get_pow3_table():
+    global _pow3_cache
+    if _pow3_cache is None:
+        _pow3_cache = np.empty(_POW3_SIZE, dtype=np.int64)
+        val = 1
+        for i in range(_POW3_SIZE):
+            _pow3_cache[i] = val
+            if val <= INT64_MAX // 3:
+                val *= 3
+            else:
+                val = INT64_MAX  # overflow sentinel
+    return _pow3_cache
+
+
+if np is not None and njit is not None:
+
+    @njit(cache=True)
+    def _ctz64(n):
+        """Count trailing zeros of a 64-bit integer."""
+        if n == 0:
+            return 64
+        count = np.int32(0)
+        val = n
+        # Binary search for trailing zeros (branchless-ish)
+        if (val & 0xFFFFFFFF) == 0:
+            count += 32
+            val >>= 32
+        if (val & 0xFFFF) == 0:
+            count += 16
+            val >>= 16
+        if (val & 0xFF) == 0:
+            count += 8
+            val >>= 8
+        if (val & 0xF) == 0:
+            count += 4
+            val >>= 4
+        if (val & 0x3) == 0:
+            count += 2
+            val >>= 2
+        if (val & 0x1) == 0:
+            count += 1
+        return count
+
+    @njit(cache=True, parallel=True)
+    def _collatz_sieve_parallel_odd(
+        first_odd, odd_count, multipliers, offsets, odd_counts, safe_limits, k
+    ):
+        """Descent-verification kernel using standard Collatz with early termination.
+
+        This kernel proves convergence by induction:
+        - Processes ALL odd seeds in [first_odd, first_odd + 2*(odd_count-1)]
+        - Stops when orbit drops below seed (descent verification)
+        - Returns descent time as stopping_time (exact step count)
+        - total_stopping_time = stopping_time (descent only, NOT full orbit to 1)
+        - max_excursion = peak value during descent (NOT full orbit peak)
+
+        Every seed is individually verified using standard Collatz steps
+        (3n+1 / n/2).  No seeds are skipped or filtered.
+
+        The shortcut-table parameters are accepted for interface compatibility
+        but are not used — step-by-step is faster for early termination because
+        the table would overshoot the descent point.
+        """
+        total_steps_out = np.empty(odd_count, dtype=np.int32)
+        stopping_steps_out = np.empty(odd_count, dtype=np.int32)
+        max_excursions_out = np.empty(odd_count, dtype=np.int64)
+
+        for index in prange(odd_count):
+            seed = np.int64(first_odd + 2 * index)
+
+            # seed=1 is trivially converged (cycle 1→4→2→1).
+            if seed <= 1:
+                total_steps_out[index] = np.int32(0)
+                stopping_steps_out[index] = np.int32(0)
+                max_excursions_out[index] = seed
+                continue
+
+            current = seed
+            steps = np.int32(0)
+            max_excursion = current
+
+            while current >= seed and steps < MAX_KERNEL_STEPS:
+                if current & 1 == 0:
+                    current >>= 1
+                    steps += 1
+                else:
+                    if current > COLLATZ_INT64_ODD_STEP_LIMIT:
+                        steps = np.int32(-1)
+                        max_excursion = np.int64(-1)
+                        break
+                    current = 3 * current + 1
+                    steps += 1
+                    if current > max_excursion:
+                        max_excursion = current
+                    while current & 1 == 0 and current >= seed:
+                        current >>= 1
+                        steps += 1
+
+            if current >= seed and current != 1 and steps >= MAX_KERNEL_STEPS:
+                steps = np.int32(-1)
+                max_excursion = np.int64(-1)
+
+            total_steps_out[index] = steps
+            stopping_steps_out[index] = steps
+            max_excursions_out[index] = max_excursion
+
+        return total_steps_out, stopping_steps_out, max_excursions_out
+
+    @njit(cache=True, parallel=True)
+    def _collatz_barina_parallel_odd(first_odd, odd_count, pow3_table):
+        """Barina domain-switching kernel with early termination.
+
+        Based on Barina 2020 (verified Collatz to 2^71).  Replaces the
+        standard if-odd/if-even branching with a domain-switching loop
+        using CTZ + precomputed powers of 3.
+
+        The transformation is mathematically equivalent to standard Collatz
+        iteration but groups multiple steps into two CTZ+shift+multiply
+        operations per loop iteration:
+
+            while n >= n0:
+                n += 1;  alpha = ctz(n);  n = (n >> alpha) * 3^alpha
+                n -= 1;  beta  = ctz(n);  n >>= beta
+
+        IMPORTANT: The step count reported by this kernel is NOT the same as
+        standard Collatz step count.  Each loop iteration processes
+        (alpha + beta) compressed steps.  The convergence proof (descent
+        below seed) is equivalent, but the step metric differs.
+
+        This kernel is EXPERIMENTAL until validated against standard Collatz
+        for the full range of interest.  Every seed is individually verified;
+        no seeds are skipped or filtered.
+        """
+        stopping_steps_out = np.empty(odd_count, dtype=np.int32)
+        max_excursions_out = np.empty(odd_count, dtype=np.int64)
+
+        for index in prange(odd_count):
+            seed = np.int64(first_odd + 2 * index)
+
+            # seed=1 is trivially converged.
+            if seed <= 1:
+                stopping_steps_out[index] = np.int32(0)
+                max_excursions_out[index] = seed
+                continue
+
+            n = seed
+            steps = np.int32(0)
+            max_excursion = n
+
+            while n >= seed and steps < MAX_KERNEL_STEPS:
+                # Domain switch: make even by adding 1
+                n += 1
+                alpha = _ctz64(n)
+                n >>= alpha
+
+                # Check overflow before multiply by 3^alpha
+                if alpha < 64 and n > INT64_MAX // pow3_table[alpha]:
+                    # Overflow: fall back to marking as overflow
+                    steps = np.int32(-1)
+                    max_excursion = np.int64(-1)
+                    break
+
+                n *= pow3_table[alpha]
+                steps += alpha  # alpha even-steps compressed
+
+                # Switch back
+                n -= 1
+                if n > max_excursion:
+                    max_excursion = n
+
+                beta = _ctz64(n)
+                n >>= beta
+                steps += beta  # beta more even-steps
+
+            if n >= seed and n != 1 and steps >= MAX_KERNEL_STEPS:
+                steps = np.int32(-1)
+                max_excursion = np.int64(-1)
+
+            stopping_steps_out[index] = steps
+            max_excursions_out[index] = max_excursion
+
+        return stopping_steps_out, max_excursions_out
+
+
+if cuda is not None and np is not None:
+
+    @cuda.jit
+    def _collatz_sieve_gpu_kernel(
+        start_value,
+        size,
+        seeds_per_thread,
+        k,
+        d_multipliers,
+        d_offsets,
+        d_odd_counts,
+        d_safe_limits,
+        block_total_values,
+        block_total_ns,
+        block_stopping_values,
+        block_stopping_ns,
+        block_excursion_values,
+        block_excursion_ns,
+        block_overflow_ns,
+    ):
+        """GPU sieve kernel with early termination.
+
+        Stops when current < original (convergence proven by induction).
+        Pure step-by-step iteration for minimum per-seed overhead.
+        """
+        tid = cuda.threadIdx.x
+        block = cuda.blockIdx.x
+        global_tid = block * cuda.blockDim.x + tid
+
+        total_vals = cuda.shared.array(256, dtype=np.int32)
+        total_ns = cuda.shared.array(256, dtype=np.int64)
+        stopping_vals = cuda.shared.array(256, dtype=np.int32)
+        stopping_ns = cuda.shared.array(256, dtype=np.int64)
+        excursion_vals = cuda.shared.array(256, dtype=np.int64)
+        excursion_ns = cuda.shared.array(256, dtype=np.int64)
+        overflow_ns = cuda.shared.array(256, dtype=np.int64)
+
+        best_tst = -1
+        best_tst_n = start_value
+        best_st = -1
+        best_st_n = start_value
+        best_exc = np.int64(-1)
+        best_exc_n = start_value
+        first_overflow = np.int64(0)
+
+        base_index = global_tid * seeds_per_thread
+        for s in range(seeds_per_thread):
+            idx = base_index + s
+            if idx >= size:
+                break
+
+            # Odd-only: map linear index to odd seed (2*idx offset from first odd)
+            original = start_value + 2 * idx
+            if original <= 1:
+                if original < best_tst_n or best_tst == -1:
+                    best_tst = 0
+                    best_tst_n = original
+                    best_st = 0
+                    best_st_n = original
+                    best_exc = original
+                    best_exc_n = original
+                continue
+            current = original
+            steps = 0
+            max_excursion = current
+
+            while current >= original and steps < MAX_KERNEL_STEPS:
+                if current & 1 == 0:
+                    current >>= 1
+                    steps += 1
+                else:
+                    if current > COLLATZ_INT64_ODD_STEP_LIMIT:
+                        if first_overflow == 0:
+                            first_overflow = original
+                        steps = -1
+                        max_excursion = -1
+                        break
+                    current = 3 * current + 1
+                    steps += 1
+                    if current > max_excursion:
+                        max_excursion = current
+                    while current & 1 == 0 and current >= original:
+                        current >>= 1
+                        steps += 1
+
+            if current >= original and steps >= MAX_KERNEL_STEPS:
+                if first_overflow == 0:
+                    first_overflow = original
+                steps = -1
+                max_excursion = -1
+
+            if steps > best_tst or (steps == best_tst and original < best_tst_n):
+                best_tst = steps
+                best_tst_n = original
+            if steps > best_st or (steps == best_st and original < best_st_n):
+                best_st = steps
+                best_st_n = original
+            if max_excursion > best_exc or (max_excursion == best_exc and original < best_exc_n):
+                best_exc = max_excursion
+                best_exc_n = original
+
+        total_vals[tid] = best_tst
+        total_ns[tid] = best_tst_n
+        stopping_vals[tid] = best_st
+        stopping_ns[tid] = best_st_n
+        excursion_vals[tid] = best_exc
+        excursion_ns[tid] = best_exc_n
+        overflow_ns[tid] = first_overflow
+        cuda.syncthreads()
+
+        stride = cuda.blockDim.x // 2
+        while stride > 0:
+            if tid < stride:
+                other = tid + stride
+                if (
+                    total_vals[other] > total_vals[tid]
+                    or (total_vals[other] == total_vals[tid] and total_ns[other] < total_ns[tid])
+                ):
+                    total_vals[tid] = total_vals[other]
+                    total_ns[tid] = total_ns[other]
+                if (
+                    stopping_vals[other] > stopping_vals[tid]
+                    or (stopping_vals[other] == stopping_vals[tid] and stopping_ns[other] < stopping_ns[tid])
+                ):
+                    stopping_vals[tid] = stopping_vals[other]
+                    stopping_ns[tid] = stopping_ns[other]
+                if (
+                    excursion_vals[other] > excursion_vals[tid]
+                    or (excursion_vals[other] == excursion_vals[tid] and excursion_ns[other] < excursion_ns[tid])
+                ):
+                    excursion_vals[tid] = excursion_vals[other]
+                    excursion_ns[tid] = excursion_ns[other]
+                if overflow_ns[tid] == 0 or (
+                    overflow_ns[other] > 0 and overflow_ns[other] < overflow_ns[tid]
+                ):
+                    overflow_ns[tid] = overflow_ns[other]
+            cuda.syncthreads()
+            stride //= 2
+
+        if tid == 0:
+            block_total_values[block] = total_vals[0]
+            block_total_ns[block] = total_ns[0]
+            block_stopping_values[block] = stopping_vals[0]
+            block_stopping_ns[block] = stopping_ns[0]
+            block_excursion_values[block] = excursion_vals[0]
+            block_excursion_ns[block] = excursion_ns[0]
+            block_overflow_ns[block] = overflow_ns[0]
+
 
 @dataclass
 class NumberMetrics:
@@ -390,6 +935,37 @@ def metrics_accelerated(value: int) -> NumberMetrics:
     return NumberMetrics(
         total_stopping_time=total_steps,
         stopping_time=stopping_time or total_steps,
+        max_excursion=max_excursion,
+    )
+
+
+def metrics_descent_direct(value: int) -> NumberMetrics:
+    """Compute standard Collatz metrics only until the orbit first drops below the seed.
+
+    This is the exact semantic used by the sieve-style verification kernels:
+    convergence is proven once the orbit reaches any smaller value, because that
+    value is already covered by ascending-order verification.
+    """
+    if value < 1:
+        raise ValueError("Collatz is defined only for positive integers.")
+    if value == 1:
+        return NumberMetrics(total_stopping_time=0, stopping_time=0, max_excursion=1)
+
+    current = value
+    steps = 0
+    max_excursion = value
+    while current >= value:
+        current = collatz_step(current)
+        steps += 1
+        max_excursion = max(max_excursion, current)
+        if steps >= MAX_KERNEL_STEPS and current >= value:
+            raise RuntimeError(
+                f"Direct descent verification exceeded MAX_KERNEL_STEPS for seed {value}"
+            )
+
+    return NumberMetrics(
+        total_stopping_time=steps,
+        stopping_time=steps,
         max_excursion=max_excursion,
     )
 
@@ -526,6 +1102,30 @@ def _effective_profile_percent(profile: ComputeProfile | None, hardware: str) ->
     return max(0, min(100, round((system_percent * hardware_percent) / 100)))
 
 
+def _compute_budget_throttle_seconds(
+    *,
+    hardware: str,
+    profile: ComputeProfile | None,
+    compute_sec: float,
+) -> float:
+    """Idle time so average duty cycle matches the compute profile.
+
+    Batch size and CPU thread count both scale with the same effective percent,
+    so wall time per batch stays ~flat between 50% and 100% without extra
+    idle. GPU batches also keep the device saturated for the whole kernel.
+    Sleeping after each batch restores a visible slowdown when the slider is
+    below 100%.
+    """
+    if compute_sec <= 0:
+        return 0.0
+    lane = "gpu" if hardware == "gpu" else "cpu"
+    effective = _effective_profile_percent(profile, lane)
+    if effective >= 100:
+        return 0.0
+    eff = max(1, effective)
+    return compute_sec * (100.0 / eff - 1.0)
+
+
 def _gpu_threads_per_block(profile: ComputeProfile | None = None) -> int:
     effective_percent = _effective_profile_percent(profile, "gpu")
     default_value = 128 if effective_percent <= 25 else 256
@@ -546,6 +1146,7 @@ def compute_range_metrics_gpu(
 ) -> AggregateMetrics:
     if not gpu_execution_ready() or cuda is None or np is None:
         raise ValueError("GPU execution is not available on this machine.")
+    silence_numba_cuda_info()
     if start < 1 or end < start:
         raise ValueError("Invalid run interval.")
     first = start_at if start_at is not None else start
@@ -644,6 +1245,78 @@ def _fallback_overflow_seeds(
         else:
             max_excursions[idx] = m.max_excursion
     return patches
+
+
+def _fallback_overflow_seeds_descent(
+    first: int,
+    total_steps,
+    stopping_steps,
+    max_excursions,
+    *,
+    stride: int = 1,
+) -> list[_OverflowPatch]:
+    """Recover descent-style metrics for overflow seeds using Python bigint."""
+    overflow_indices = np.where(total_steps < 0)[0]
+    if overflow_indices.size == 0:
+        return []
+    patches: list[_OverflowPatch] = []
+    for idx in overflow_indices:
+        seed = first + (stride * int(idx))
+        m = metrics_descent_direct(seed)
+        total_steps[idx] = m.total_stopping_time
+        stopping_steps[idx] = m.stopping_time
+        if m.max_excursion > INT64_MAX:
+            max_excursions[idx] = INT64_MAX
+            patches.append(_OverflowPatch(seed, m.total_stopping_time, m.stopping_time, m.max_excursion))
+        else:
+            max_excursions[idx] = m.max_excursion
+    return patches
+
+
+def _aggregate_metrics_from_strided_arrays(
+    first_value: int,
+    stride: int,
+    total_steps,
+    stopping_steps,
+    max_excursions,
+    *,
+    sample_limit: int,
+) -> AggregateMetrics:
+    count = len(total_steps)
+    max_total = {"n": first_value, "value": -1}
+    max_stopping = {"n": first_value, "value": -1}
+    max_excursion = {"n": first_value, "value": -1}
+    sample_records: list[dict] = []
+
+    for index in range(count):
+        value = first_value + (stride * index)
+        total = int(total_steps[index])
+        stopping = int(stopping_steps[index])
+        excursion = int(max_excursions[index])
+
+        if total > max_total["value"]:
+            max_total = {"n": value, "value": total}
+            if len(sample_records) < sample_limit:
+                sample_records.append({"metric": "max_total_stopping_time", **max_total})
+
+        if stopping > max_stopping["value"]:
+            max_stopping = {"n": value, "value": stopping}
+            if len(sample_records) < sample_limit:
+                sample_records.append({"metric": "max_stopping_time", **max_stopping})
+
+        if excursion > max_excursion["value"]:
+            max_excursion = {"n": value, "value": excursion}
+            if len(sample_records) < sample_limit:
+                sample_records.append({"metric": "max_excursion", **max_excursion})
+
+    return AggregateMetrics(
+        processed=count,
+        last_processed=first_value + (stride * (count - 1) if count else 0),
+        max_total_stopping_time=max_total,
+        max_stopping_time=max_stopping,
+        max_excursion=max_excursion,
+        sample_records=sample_records,
+    )
 
 
 def compute_range_metrics_parallel(
@@ -800,6 +1473,406 @@ def compute_range_metrics_parallel_odd(
     return aggregate
 
 
+def compute_range_metrics_parallel_descent(
+    start: int,
+    end: int,
+    *,
+    start_at: int | None = None,
+    sample_limit: int = 12,
+    profile: ComputeProfile | None = None,
+) -> AggregateMetrics:
+    """Full-range standard Collatz descent verifier for validation and GPU fallback."""
+    if np is None or njit is None or prange is None:
+        raise ValueError("CPU parallel execution requires numpy and numba.")
+    if start < 1 or end < start:
+        raise ValueError("Invalid run interval.")
+    first = start_at if start_at is not None else start
+    if first < start or first > end:
+        raise ValueError("Checkpoint start is outside the run interval.")
+
+    if set_num_threads is not None:
+        total_cores = os.cpu_count() or 1
+        effective_percent = _effective_profile_percent(profile, "cpu")
+        thread_count = max(1, min(total_cores, round(total_cores * max(effective_percent, 1) / 100)))
+        set_num_threads(thread_count)
+
+    size = end - first + 1
+    total_steps, stopping_steps, max_excursions = _collatz_metrics_parallel_descent(first, size)
+    patches = _fallback_overflow_seeds_descent(first, total_steps, stopping_steps, max_excursions)
+    aggregate = _aggregate_metrics_from_arrays(
+        first,
+        total_steps,
+        stopping_steps,
+        max_excursions,
+        sample_limit=sample_limit,
+    )
+    for patch in patches:
+        if patch.max_excursion > aggregate.max_excursion["value"]:
+            aggregate.max_excursion = {"n": patch.seed, "value": patch.max_excursion}
+        if patch.total_stopping_time > aggregate.max_total_stopping_time["value"]:
+            aggregate.max_total_stopping_time = {"n": patch.seed, "value": patch.total_stopping_time}
+        if patch.stopping_time > aggregate.max_stopping_time["value"]:
+            aggregate.max_stopping_time = {"n": patch.seed, "value": patch.stopping_time}
+    return aggregate
+
+
+def compute_range_metrics_parallel_descent_odd(
+    start: int,
+    end: int,
+    *,
+    start_at: int | None = None,
+    sample_limit: int = 12,
+    profile: ComputeProfile | None = None,
+) -> AggregateMetrics:
+    """Odd-only standard Collatz descent verifier for validating cpu-sieve."""
+    if np is None or njit is None or prange is None:
+        raise ValueError("CPU parallel execution requires numpy and numba.")
+    if start < 1 or end < start:
+        raise ValueError("Invalid run interval.")
+    first = start_at if start_at is not None else start
+    if first < start or first > end:
+        raise ValueError("Checkpoint start is outside the run interval.")
+
+    if set_num_threads is not None:
+        total_cores = os.cpu_count() or 1
+        effective_percent = _effective_profile_percent(profile, "cpu")
+        thread_count = max(1, min(total_cores, round(total_cores * max(effective_percent, 1) / 100)))
+        set_num_threads(thread_count)
+
+    first_odd = first if first & 1 else first + 1
+    if first_odd > end:
+        return AggregateMetrics(
+            processed=0,
+            last_processed=end,
+            max_total_stopping_time={"n": first, "value": 0},
+            max_stopping_time={"n": first, "value": 0},
+            max_excursion={"n": first, "value": 0},
+            sample_records=[],
+        )
+
+    odd_count = ((end - first_odd) // 2) + 1
+    total_steps, stopping_steps, max_excursions = _collatz_metrics_parallel_descent_odd(first_odd, odd_count)
+    patches = _fallback_overflow_seeds_descent(
+        first_odd, total_steps, stopping_steps, max_excursions, stride=2,
+    )
+    aggregate = _aggregate_metrics_from_strided_arrays(
+        first_odd,
+        2,
+        total_steps,
+        stopping_steps,
+        max_excursions,
+        sample_limit=sample_limit,
+    )
+    aggregate.last_processed = end
+    for patch in patches:
+        if patch.max_excursion > aggregate.max_excursion["value"]:
+            aggregate.max_excursion = {"n": patch.seed, "value": patch.max_excursion}
+        if patch.total_stopping_time > aggregate.max_total_stopping_time["value"]:
+            aggregate.max_total_stopping_time = {"n": patch.seed, "value": patch.total_stopping_time}
+        if patch.stopping_time > aggregate.max_stopping_time["value"]:
+            aggregate.max_stopping_time = {"n": patch.seed, "value": patch.stopping_time}
+    return aggregate
+
+
+def compute_range_metrics_sieve_odd(
+    start: int,
+    end: int,
+    *,
+    start_at: int | None = None,
+    sample_limit: int = 12,
+    profile: ComputeProfile | None = None,
+) -> AggregateMetrics:
+    """Process only odd seeds with standard Collatz until first descent.
+
+    This is the canonical odd-only descent verifier: every odd seed is checked
+    individually, and even seeds are covered by induction on ``v2(n)``.  The
+    current implementation is step-by-step; the sieve tables are retained for
+    future experimentation but are not part of the correctness contract.
+    """
+    if np is None or njit is None or prange is None:
+        raise ValueError("CPU parallel execution requires numpy and numba.")
+    if start < 1 or end < start:
+        raise ValueError("Invalid run interval.")
+    first = start_at if start_at is not None else start
+    if first < start or first > end:
+        raise ValueError("Checkpoint start is outside the run interval.")
+
+    if set_num_threads is not None:
+        total_cores = os.cpu_count() or 1
+        effective_percent = _effective_profile_percent(profile, "cpu")
+        thread_count = max(1, min(total_cores, round(total_cores * max(effective_percent, 1) / 100)))
+        set_num_threads(thread_count)
+
+    first_odd = first if first & 1 else first + 1
+    if first_odd > end:
+        return AggregateMetrics(
+            processed=0,
+            last_processed=end,
+            max_total_stopping_time={"n": first, "value": 0},
+            max_stopping_time={"n": first, "value": 0},
+            max_excursion={"n": first, "value": 0},
+            sample_records=[],
+        )
+
+    odd_count = ((end - first_odd) // 2) + 1
+    multipliers, offsets, odd_counts_tbl, safe_limits = _get_sieve_tables()
+
+    total_steps, stopping_steps, max_excursions = _collatz_sieve_parallel_odd(
+        first_odd, odd_count, multipliers, offsets, odd_counts_tbl, safe_limits, SIEVE_K
+    )
+
+    # Overflow fallback must preserve descent semantics. Using full-orbit
+    # metrics here would silently inflate max_total/max_stopping records for
+    # large seeds and make validator mismatches look like compute failures.
+    patches: list[_OverflowPatch] = []
+    overflow_indices = np.where(total_steps < 0)[0]
+    if overflow_indices.size > 0:
+        for idx in overflow_indices:
+            seed = first_odd + 2 * int(idx)
+            m = metrics_descent_direct(seed)
+            total_steps[idx] = m.total_stopping_time
+            stopping_steps[idx] = m.stopping_time
+            if m.max_excursion > INT64_MAX:
+                max_excursions[idx] = INT64_MAX
+                patches.append(_OverflowPatch(seed, m.total_stopping_time, m.stopping_time, m.max_excursion))
+            else:
+                max_excursions[idx] = m.max_excursion
+
+    # Fast NumPy aggregation — replaces O(N) Python loop with vectorised ops.
+    # For the sieve kernel total_steps == stopping_steps (early termination).
+    best_total_idx = int(np.argmax(total_steps))
+    best_total_seed = first_odd + 2 * best_total_idx
+    best_total_val = int(total_steps[best_total_idx])
+    max_total = {"n": best_total_seed, "value": best_total_val}
+    max_stopping = {"n": best_total_seed, "value": best_total_val}
+
+    best_exc_idx = int(np.argmax(max_excursions))
+    best_exc_seed = first_odd + 2 * best_exc_idx
+    best_exc_val = int(max_excursions[best_exc_idx])
+    max_excursion_agg = {"n": best_exc_seed, "value": best_exc_val}
+
+    sample_records: list[dict] = []
+    if best_total_val > 0:
+        sample_records.append({"metric": "max_total_stopping_time", **max_total})
+        sample_records.append({"metric": "max_stopping_time", **max_stopping})
+    if best_exc_val > 0:
+        sample_records.append({"metric": "max_excursion", **max_excursion_agg})
+
+    aggregate = AggregateMetrics(
+        processed=odd_count,
+        last_processed=end,
+        max_total_stopping_time=max_total,
+        max_stopping_time=max_stopping,
+        max_excursion=max_excursion_agg,
+        sample_records=sample_records,
+    )
+
+    for patch in patches:
+        if patch.max_excursion > aggregate.max_excursion["value"]:
+            aggregate.max_excursion = {"n": patch.seed, "value": patch.max_excursion}
+        if patch.total_stopping_time > aggregate.max_total_stopping_time["value"]:
+            aggregate.max_total_stopping_time = {"n": patch.seed, "value": patch.total_stopping_time}
+        if patch.stopping_time > aggregate.max_stopping_time["value"]:
+            aggregate.max_stopping_time = {"n": patch.seed, "value": patch.stopping_time}
+    return aggregate
+
+
+def compute_range_metrics_barina_odd(
+    start: int,
+    end: int,
+    *,
+    start_at: int | None = None,
+    sample_limit: int = 12,
+    profile: ComputeProfile | None = None,
+) -> AggregateMetrics:
+    """EXPERIMENTAL descent-verification using Barina's domain-switching algorithm.
+
+    Uses CTZ + powers-of-3 table instead of if-odd/if-even branching.
+    Every odd seed is individually verified — no seeds are skipped.
+
+    IMPORTANT: This kernel is experimental.  The domain-switching
+    transformation is mathematically equivalent to standard Collatz for
+    convergence, but the step counts and intermediate values differ from
+    standard Collatz iteration.  Use cpu-sieve for canonical verification.
+
+    This is a DESCENT verifier, not a full-orbit calculator:
+    - total_stopping_time = Barina-domain descent steps (NOT standard Collatz steps)
+    - max_excursion = peak in Barina domain (NOT standard Collatz orbit peak)
+    """
+    if np is None or njit is None or prange is None:
+        raise ValueError("CPU parallel execution requires numpy and numba.")
+    if start < 1 or end < start:
+        raise ValueError("Invalid run interval.")
+    first = start_at if start_at is not None else start
+    if first < start or first > end:
+        raise ValueError("Checkpoint start is outside the run interval.")
+
+    if set_num_threads is not None:
+        total_cores = os.cpu_count() or 1
+        effective_percent = _effective_profile_percent(profile, "cpu")
+        thread_count = max(1, min(total_cores, round(total_cores * max(effective_percent, 1) / 100)))
+        set_num_threads(thread_count)
+
+    first_odd = first if first & 1 else first + 1
+    if first_odd > end:
+        return AggregateMetrics(
+            processed=0,
+            last_processed=end,
+            max_total_stopping_time={"n": first, "value": 0},
+            max_stopping_time={"n": first, "value": 0},
+            max_excursion={"n": first, "value": 0},
+            sample_records=[],
+        )
+
+    odd_count = ((end - first_odd) // 2) + 1
+    pow3 = _get_pow3_table()
+
+    stopping_steps, max_excursions = _collatz_barina_parallel_odd(
+        first_odd, odd_count, pow3
+    )
+
+    # Overflow fallback
+    overflow_indices = np.where(stopping_steps < 0)[0]
+    if overflow_indices.size > 0:
+        for idx in overflow_indices:
+            seed = first_odd + 2 * int(idx)
+            m = metrics_accelerated(seed)
+            stopping_steps[idx] = m.stopping_time
+            if m.max_excursion > INT64_MAX:
+                max_excursions[idx] = INT64_MAX
+            else:
+                max_excursions[idx] = m.max_excursion
+
+    # Fast NumPy aggregation
+    best_stop_idx = int(np.argmax(stopping_steps))
+    best_stop_seed = first_odd + 2 * best_stop_idx
+    best_stop_val = int(stopping_steps[best_stop_idx])
+    max_stopping = {"n": best_stop_seed, "value": best_stop_val}
+
+    best_exc_idx = int(np.argmax(max_excursions))
+    best_exc_seed = first_odd + 2 * best_exc_idx
+    best_exc_val = int(max_excursions[best_exc_idx])
+    max_excursion_agg = {"n": best_exc_seed, "value": best_exc_val}
+
+    sample_records: list[dict] = []
+    if best_stop_val > 0:
+        sample_records.append({"metric": "max_total_stopping_time", **max_stopping})
+        sample_records.append({"metric": "max_stopping_time", **max_stopping})
+    if best_exc_val > 0:
+        sample_records.append({"metric": "max_excursion", **max_excursion_agg})
+
+    return AggregateMetrics(
+        processed=odd_count,
+        last_processed=end,
+        max_total_stopping_time=max_stopping,
+        max_stopping_time=max_stopping,
+        max_excursion=max_excursion_agg,
+        sample_records=sample_records,
+    )
+
+
+def compute_range_metrics_gpu_sieve(
+    start: int,
+    end: int,
+    *,
+    start_at: int | None = None,
+    sample_limit: int = 12,
+    profile: ComputeProfile | None = None,
+) -> AggregateMetrics:
+    """GPU odd-only standard Collatz descent verifier.
+
+    Processes only odd seeds (like cpu-sieve) for 2x throughput improvement.
+    Even seeds are covered by induction on v2(n).
+    """
+    if not gpu_execution_ready() or cuda is None or np is None:
+        raise ValueError("GPU execution is not available on this machine.")
+    silence_numba_cuda_info()
+    if start < 1 or end < start:
+        raise ValueError("Invalid run interval.")
+    first = start_at if start_at is not None else start
+    if first < start or first > end:
+        raise ValueError("Checkpoint start is outside the run interval.")
+
+    first_odd = first if first & 1 else first + 1
+    odd_count = ((end - first_odd) // 2) + 1 if first_odd <= end else 0
+    if odd_count <= 0:
+        return AggregateMetrics(
+            processed=0,
+            last_processed=end,
+            max_total_stopping_time={"n": first, "value": 0},
+            max_stopping_time={"n": first, "value": 0},
+            max_excursion={"n": first, "value": 0},
+            sample_records=[],
+        )
+
+    size = odd_count
+    threads_per_block = _gpu_threads_per_block(profile)
+    seeds_per_thread = GPU_SEEDS_PER_THREAD
+    total_threads = math.ceil(size / seeds_per_thread)
+    blocks_per_grid = math.ceil(total_threads / threads_per_block)
+
+    multipliers, offsets, odd_counts_tbl, safe_limits = _get_sieve_tables()
+    d_mul = cuda.to_device(multipliers)
+    d_off = cuda.to_device(offsets)
+    d_odc = cuda.to_device(odd_counts_tbl)
+    d_safe = cuda.to_device(safe_limits)
+
+    d_block_total_values = cuda.device_array(blocks_per_grid, dtype=np.int32)
+    d_block_total_ns = cuda.device_array(blocks_per_grid, dtype=np.int64)
+    d_block_stopping_values = cuda.device_array(blocks_per_grid, dtype=np.int32)
+    d_block_stopping_ns = cuda.device_array(blocks_per_grid, dtype=np.int64)
+    d_block_excursion_values = cuda.device_array(blocks_per_grid, dtype=np.int64)
+    d_block_excursion_ns = cuda.device_array(blocks_per_grid, dtype=np.int64)
+    d_block_overflow_ns = cuda.device_array(blocks_per_grid, dtype=np.int64)
+
+    _collatz_sieve_gpu_kernel[blocks_per_grid, threads_per_block](
+        first_odd,
+        size,
+        seeds_per_thread,
+        SIEVE_K,
+        d_mul, d_off, d_odc, d_safe,
+        d_block_total_values,
+        d_block_total_ns,
+        d_block_stopping_values,
+        d_block_stopping_ns,
+        d_block_excursion_values,
+        d_block_excursion_ns,
+        d_block_overflow_ns,
+    )
+
+    block_total_values = d_block_total_values.copy_to_host()
+    block_total_ns = d_block_total_ns.copy_to_host()
+    block_stopping_values = d_block_stopping_values.copy_to_host()
+    block_stopping_ns = d_block_stopping_ns.copy_to_host()
+    block_excursion_values = d_block_excursion_values.copy_to_host()
+    block_excursion_ns = d_block_excursion_ns.copy_to_host()
+    block_overflow_ns = d_block_overflow_ns.copy_to_host()
+
+    first_overflow = int(block_overflow_ns[block_overflow_ns > 0].min()) if (block_overflow_ns > 0).any() else 0
+
+    if first_overflow > 0:
+        return compute_range_metrics_parallel_descent(
+            start, end, start_at=start_at, sample_limit=sample_limit, profile=profile
+        )
+
+    agg = _aggregate_metrics_from_block_summaries(
+        first_odd,
+        odd_count,
+        block_total_values,
+        block_total_ns,
+        block_stopping_values,
+        block_stopping_ns,
+        block_excursion_values,
+        block_excursion_ns,
+        sample_limit=sample_limit,
+    )
+    # Fix processed count and last_processed to reflect the full range
+    # (even seeds are covered by induction, same as cpu-sieve).
+    agg.processed = odd_count
+    agg.last_processed = end
+    return agg
+
+
 def compute_range_metrics(
     start: int,
     end: int,
@@ -830,8 +1903,32 @@ def compute_range_metrics(
             sample_limit=sample_limit,
             profile=profile,
         )
+    if kernel == CPU_SIEVE_KERNEL:
+        return compute_range_metrics_sieve_odd(
+            start,
+            end,
+            start_at=start_at,
+            sample_limit=sample_limit,
+            profile=profile,
+        )
+    if kernel == CPU_BARINA_KERNEL:
+        return compute_range_metrics_barina_odd(
+            start,
+            end,
+            start_at=start_at,
+            sample_limit=sample_limit,
+            profile=profile,
+        )
     if kernel == GPU_KERNEL:
         return compute_range_metrics_gpu(
+            start,
+            end,
+            start_at=start_at,
+            sample_limit=sample_limit,
+            profile=profile,
+        )
+    if kernel == GPU_SIEVE_KERNEL:
+        return compute_range_metrics_gpu_sieve(
             start,
             end,
             start_at=start_at,
@@ -900,8 +1997,20 @@ def _effective_checkpoint_interval(
             round(_positive_int_env("COLLATZ_CPU_PARALLEL_ODD_BATCH_SIZE", 100_000_000) * max(cpu_percent, 5) / 100),
         ),
         GPU_KERNEL: max(
+            10_000_000,
+            round(_positive_int_env("COLLATZ_GPU_BATCH_SIZE", 100_000_000) * max(gpu_percent, 5) / 100),
+        ),
+        CPU_SIEVE_KERNEL: max(
             5_000_000,
-            round(_positive_int_env("COLLATZ_GPU_BATCH_SIZE", 50_000_000) * max(gpu_percent, 5) / 100),
+            round(_positive_int_env("COLLATZ_CPU_SIEVE_BATCH_SIZE", 200_000_000) * max(cpu_percent, 5) / 100),
+        ),
+        CPU_BARINA_KERNEL: max(
+            5_000_000,
+            round(_positive_int_env("COLLATZ_CPU_BARINA_BATCH_SIZE", 200_000_000) * max(cpu_percent, 5) / 100),
+        ),
+        GPU_SIEVE_KERNEL: max(
+            25_000_000,
+            round(_positive_int_env("COLLATZ_GPU_SIEVE_BATCH_SIZE", 500_000_000) * max(gpu_percent, 5) / 100),
         ),
     }
     return max(checkpoint_interval, minimums.get(kernel, checkpoint_interval))
@@ -1048,6 +2157,8 @@ def queue_continuous_verification_runs(
         if _is_overflow_guard_failure(run)
     }
     profile = repository.get_compute_profile()
+    if not profile.continuous_enabled:
+        return []
     active_runs = [
         run
         for run in runs
@@ -1065,11 +2176,67 @@ def queue_continuous_verification_runs(
 
     cpu_intensity = _effective_profile_percent(profile, "cpu")
     gpu_intensity = _effective_profile_percent(profile, "gpu")
-    # Odd-only kernel skips even seeds (2x throughput) — mathematically
-    # equivalent for verification via v2 induction.  Double the span to
-    # match the same wall-clock budget.
-    cpu_span = max(50_000_000, round(500_000_000 * max(cpu_intensity, 5) / 100))
-    gpu_span = max(250_000_000, round(3_000_000_000 * max(gpu_intensity, 5) / 100))
+    # Dynamic span: look at last 3 completed CPU sieve runs and scale up if fast
+    recent_cpu_runs = [
+        r for r in runs
+        if r.hardware == "cpu"
+        and r.kernel == CPU_SIEVE_KERNEL
+        and r.status in {RunStatus.COMPLETED, RunStatus.VALIDATED}
+        and r.started_at
+        and r.finished_at
+    ][-3:]
+
+    base_cpu_span = 2_000_000_000
+    if len(recent_cpu_runs) >= 2:
+        durations = []
+        for r in recent_cpu_runs:
+            try:
+                start = datetime.fromisoformat(r.started_at.replace("Z", "+00:00"))
+                finish = datetime.fromisoformat(r.finished_at.replace("Z", "+00:00"))
+                durations.append((finish - start).total_seconds())
+            except Exception:
+                pass
+        if durations:
+            avg_secs = sum(durations) / len(durations)
+            run_size = recent_cpu_runs[-1].range_end - recent_cpu_runs[-1].range_start + 1
+            if avg_secs > 0 and run_size > 0:
+                # Target: runs should take ~120 seconds for good checkpoint cadence
+                # No upper cap — span grows freely until runs naturally reach ~120s
+                target_span = int(run_size * 120 / max(avg_secs, 5))
+                base_cpu_span = max(500_000_000, target_span)
+
+    # Sieve kernel uses standard Collatz steps with early termination.
+    # Every odd seed is individually verified — no seeds are skipped.
+    cpu_span = max(100_000_000, round(base_cpu_span * max(cpu_intensity, 5) / 100))
+
+    # Dynamic GPU span: same strategy as CPU — target ~120s per run
+    # GPU sieve is full-range Numba-bound, so it's slower than CPU per seed.
+    recent_gpu_runs = [
+        r for r in runs
+        if r.hardware == "gpu"
+        and r.kernel == GPU_SIEVE_KERNEL
+        and r.status in {RunStatus.COMPLETED, RunStatus.VALIDATED}
+        and r.started_at
+        and r.finished_at
+    ][-3:]
+    base_gpu_span = 1_000_000_000
+    if len(recent_gpu_runs) >= 2:
+        gpu_durations = []
+        for r in recent_gpu_runs:
+            try:
+                start = datetime.fromisoformat(r.started_at.replace("Z", "+00:00"))
+                finish = datetime.fromisoformat(r.finished_at.replace("Z", "+00:00"))
+                gpu_durations.append((finish - start).total_seconds())
+            except Exception:
+                pass
+        if gpu_durations:
+            avg_gpu_secs = sum(gpu_durations) / len(gpu_durations)
+            gpu_run_size = recent_gpu_runs[-1].range_end - recent_gpu_runs[-1].range_start + 1
+            if avg_gpu_secs > 0 and gpu_run_size > 0:
+                # No upper cap — span grows freely until runs naturally reach ~120s
+                target_gpu_span = int(gpu_run_size * 120 / max(avg_gpu_secs, 10))
+                base_gpu_span = max(250_000_000, target_gpu_span)
+    gpu_span = max(250_000_000, round(base_gpu_span * max(gpu_intensity, 5) / 100))
 
     if "cpu" in allowed_hardware and cpu_intensity > 0 and not active_cpu:
         cpu_end = next_start + cpu_span - 1
@@ -1078,7 +2245,7 @@ def queue_continuous_verification_runs(
             name="autopilot-continuous-cpu",
             range_start=next_start,
             range_end=cpu_end,
-            kernel=CPU_PARALLEL_ODD_KERNEL,
+            kernel=CPU_SIEVE_KERNEL,
             hardware="cpu",
             owner=owner,
         )
@@ -1092,13 +2259,126 @@ def queue_continuous_verification_runs(
             name="autopilot-continuous-gpu",
             range_start=next_start,
             range_end=gpu_end,
-            kernel="gpu-collatz-accelerated",
+            kernel=GPU_SIEVE_KERNEL,
             hardware="gpu",
             owner=owner,
         )
         queued_ids.append(run.id)
 
     return queued_ids
+
+
+def _is_legacy_validation_failure(run: Run) -> bool:
+    return (
+        run.direction_slug == "verification"
+        and run.status == RunStatus.FAILED
+        and run.owner != LEGACY_VALIDATION_RERUN_OWNER
+        and str(run.summary or "").startswith("Validation failed:")
+    )
+
+
+def queue_legacy_validation_reruns(
+    repository: LabRepository,
+    *,
+    supported_hardware: list[str] | None = None,
+    limit: int = 4,
+) -> list[str]:
+    allowed_hardware = set(supported_hardware or ["cpu", "gpu"])
+    runs = repository.list_runs()
+    existing_names = {run.name for run in runs}
+    existing_exact_ranges = {
+        (run.range_start, run.range_end, run.kernel, run.hardware)
+        for run in runs
+        if run.status in {RunStatus.QUEUED, RunStatus.RUNNING, RunStatus.COMPLETED, RunStatus.VALIDATED}
+    }
+    queued_ids: list[str] = []
+
+    candidates = sorted(
+        [
+            run
+            for run in runs
+            if _is_legacy_validation_failure(run)
+            and run.hardware in allowed_hardware
+            and f"{LEGACY_VALIDATION_RERUN_PREFIX}{run.id}" not in existing_names
+            and (run.range_start, run.range_end, run.kernel, run.hardware) not in existing_exact_ranges
+        ],
+        key=lambda run: (run.range_start, run.created_at or "", run.id),
+    )
+
+    for source in candidates[: max(0, limit)]:
+        rerun = repository.create_run(
+            direction_slug=source.direction_slug,
+            name=f"{LEGACY_VALIDATION_RERUN_PREFIX}{source.id}",
+            range_start=source.range_start,
+            range_end=source.range_end,
+            kernel=source.kernel,
+            owner=LEGACY_VALIDATION_RERUN_OWNER,
+            code_version=source.code_version,
+            hardware=source.hardware,
+        )
+        queued_ids.append(rerun.id)
+        existing_names.add(rerun.name)
+        existing_exact_ranges.add((source.range_start, source.range_end, source.kernel, source.hardware))
+        if "Legacy revalidation queued via" not in (source.summary or ""):
+            repository.update_run(
+                source.id,
+                summary=(
+                    f"{source.summary.rstrip()} "
+                    f"Legacy revalidation queued via {rerun.id}."
+                ).strip(),
+            )
+
+    return queued_ids
+
+
+def annotate_legacy_validation_failures(
+    repository: LabRepository,
+    *,
+    limit: int = 64,
+) -> int:
+    runs = repository.list_runs()
+    successors_by_signature: dict[tuple[int, int, str, str], list[Run]] = {}
+    for run in runs:
+        if run.status not in {RunStatus.QUEUED, RunStatus.RUNNING, RunStatus.COMPLETED, RunStatus.VALIDATED}:
+            continue
+        signature = (run.range_start, run.range_end, run.kernel, run.hardware)
+        successors_by_signature.setdefault(signature, []).append(run)
+
+    updated = 0
+    for failed in runs:
+        if not _is_legacy_validation_failure(failed):
+            continue
+        if "Superseded by" in (failed.summary or ""):
+            continue
+        signature = (failed.range_start, failed.range_end, failed.kernel, failed.hardware)
+        successors = [
+            run
+            for run in successors_by_signature.get(signature, [])
+            if run.id != failed.id
+        ]
+        if not successors:
+            continue
+        successors.sort(
+            key=lambda run: (
+                0 if run.status == RunStatus.VALIDATED else 1,
+                0 if run.status == RunStatus.COMPLETED else 1,
+                run.created_at or "",
+                run.id,
+            )
+        )
+        successor = successors[0]
+        repository.update_run(
+            failed.id,
+            summary=(
+                f"{failed.summary.rstrip()} "
+                f"Superseded by {successor.id} ({successor.status.value}) on the current code path."
+            ).strip(),
+        )
+        updated += 1
+        if updated >= max(0, limit):
+            break
+
+    return updated
 
 
 def _aggregate_validation_payload(metrics: AggregateMetrics) -> dict:
@@ -1109,6 +2389,45 @@ def _aggregate_validation_payload(metrics: AggregateMetrics) -> dict:
         "max_stopping_time": metrics.max_stopping_time,
         "max_excursion": metrics.max_excursion,
     }
+
+
+def _run_completion_summary(run: Run, aggregate: dict) -> str:
+    if run.kernel == CPU_SIEVE_KERNEL:
+        return (
+            f"Completed odd-seed descent verification on {run.hardware} for range "
+            f"{run.range_start}-{run.range_end}; max descent steps at "
+            f"{aggregate['max_total_stopping_time']['n']}, max descent excursion at "
+            f"{aggregate['max_excursion']['n']}."
+        )
+    if run.kernel == GPU_SIEVE_KERNEL:
+        return (
+            f"Completed full-range descent verification on {run.hardware} for range "
+            f"{run.range_start}-{run.range_end}; max descent steps at "
+            f"{aggregate['max_total_stopping_time']['n']}, max descent excursion at "
+            f"{aggregate['max_excursion']['n']}."
+        )
+    if run.kernel == CPU_BARINA_KERNEL:
+        return (
+            f"Completed experimental Barina-domain descent verification on {run.hardware} "
+            f"for range {run.range_start}-{run.range_end}; compressed descent record at "
+            f"{aggregate['max_total_stopping_time']['n']}."
+        )
+    return (
+        f"Completed {run.kernel} on {run.hardware} for range {run.range_start}-{run.range_end}; "
+        f"max total stopping time at {aggregate['max_total_stopping_time']['n']}, "
+        f"max excursion at {aggregate['max_excursion']['n']}."
+    )
+
+
+def _validation_mode_label(run: Run, *, range_size: int) -> str:
+    base = "full replay" if range_size <= SELECTIVE_VALIDATION_THRESHOLD else "selective"
+    if run.kernel == CPU_SIEVE_KERNEL:
+        return f"{base}, odd-seed descent reference"
+    if run.kernel == GPU_SIEVE_KERNEL:
+        return f"{base}, descent reference"
+    if run.kernel == CPU_BARINA_KERNEL:
+        return f"{base}, experimental Barina audit"
+    return base
 
 
 def execute_run(
@@ -1135,51 +2454,71 @@ def execute_run(
     if run.metrics:
         aggregate.update(run.metrics)
 
-    batch_start = start_at
-    while batch_start <= run.range_end:
-        profile = repository.get_compute_profile()
-        effective_checkpoint_interval = _effective_checkpoint_interval(
-            run.kernel,
-            checkpoint_interval,
-            profile=profile,
-        )
-        batch_end = min(batch_start + effective_checkpoint_interval - 1, run.range_end)
-        _t0 = time.perf_counter()
-        batch = compute_range_metrics(batch_start, batch_end, kernel=run.kernel, profile=profile)
-        _t1 = time.perf_counter()
-        aggregate["processed"] += batch.processed
-        aggregate["last_processed"] = batch.last_processed
-        for key in ("max_total_stopping_time", "max_stopping_time", "max_excursion"):
-            if batch.__dict__[key]["value"] > aggregate[key]["value"]:
-                aggregate[key] = batch.__dict__[key]
-        aggregate["sample_records"] = (
-            aggregate["sample_records"] + batch.sample_records
-        )[:12]
+    writer = _CheckpointWriter()
+    try:
+        batch_start = start_at
+        while batch_start <= run.range_end:
+            profile = repository.get_compute_profile()
+            effective_checkpoint_interval = _effective_checkpoint_interval(
+                run.kernel,
+                checkpoint_interval,
+                profile=profile,
+            )
+            batch_end = min(batch_start + effective_checkpoint_interval - 1, run.range_end)
+            _t0 = time.perf_counter()
+            batch = compute_range_metrics(batch_start, batch_end, kernel=run.kernel, profile=profile)
+            _t1 = time.perf_counter()
+            aggregate["processed"] += batch.processed
+            aggregate["last_processed"] = batch.last_processed
+            for key in ("max_total_stopping_time", "max_stopping_time", "max_excursion"):
+                if batch.__dict__[key]["value"] > aggregate[key]["value"]:
+                    aggregate[key] = batch.__dict__[key]
+            aggregate["sample_records"] = (
+                aggregate["sample_records"] + batch.sample_records
+            )[:12]
 
-        _t2 = time.perf_counter()
-        repository.update_run(
-            run.id,
-            checkpoint={
-                "next_value": batch_end + 1,
-                "last_processed": batch.last_processed,
-                "checkpoint_interval": effective_checkpoint_interval,
-            },
-            metrics=aggregate,
-            summary=f"Processed {aggregate['processed']} values",
-        )
-        _t3 = time.perf_counter()
-        import sys as _sys
-        print(json.dumps({
-            "timing": "execute_run_batch",
-            "kernel": run.kernel,
-            "batch_size": batch_end - batch_start + 1,
-            "compute_sec": round(_t1 - _t0, 3),
-            "aggregate_sec": round(_t2 - _t1, 3),
-            "checkpoint_sec": round(_t3 - _t2, 3),
-            "total_sec": round(_t3 - _t0, 3),
-            "gpu_pct": round((_t1 - _t0) / (_t3 - _t0) * 100, 1) if (_t3 - _t0) > 0 else 0,
-        }), flush=True, file=_sys.stderr)
-        batch_start = batch_end + 1
+            _t2 = time.perf_counter()
+            # Snapshot aggregate for the background thread (shallow copy is
+            # safe because nested dicts are replaced, never mutated in-place).
+            writer.submit(
+                repository,
+                run.id,
+                checkpoint={
+                    "next_value": batch_end + 1,
+                    "last_processed": batch.last_processed,
+                    "checkpoint_interval": effective_checkpoint_interval,
+                },
+                metrics=dict(aggregate),
+                summary=f"Processed {aggregate['processed']} values",
+            )
+            _t3 = time.perf_counter()
+            throttle_sec = _compute_budget_throttle_seconds(
+                hardware=run.hardware,
+                profile=profile,
+                compute_sec=_t1 - _t0,
+            )
+            if throttle_sec > 0:
+                time.sleep(throttle_sec)
+            _t4 = time.perf_counter()
+            import sys as _sys
+            print(json.dumps({
+                "timing": "execute_run_batch",
+                "kernel": run.kernel,
+                "batch_size": batch_end - batch_start + 1,
+                "compute_sec": round(_t1 - _t0, 3),
+                "aggregate_sec": round(_t2 - _t1, 3),
+                "submit_sec": round(_t3 - _t2, 3),
+                "throttle_sec": round(throttle_sec, 3),
+                "total_sec": round(_t4 - _t0, 3),
+                "gpu_pct": round((_t1 - _t0) / (_t4 - _t0) * 100, 1) if (_t4 - _t0) > 0 else 0,
+            }), flush=True, file=_sys.stderr)
+            batch_start = batch_end + 1
+
+        # Ensure the last in-loop checkpoint is committed before completion.
+        writer.shutdown()
+    except Exception:
+        writer.shutdown()
+        raise
 
     metrics_path = repository.settings.artifacts_dir / "runs" / f"{run.id}.json"
     metrics_path.write_text(json.dumps(aggregate, indent=2), encoding="utf-8")
@@ -1195,11 +2534,7 @@ def execute_run(
         },
     )
     checksum = sha256_text(json.dumps(aggregate, sort_keys=True))
-    summary = (
-        f"Completed {run.kernel} on {run.hardware} for range {run.range_start}-{run.range_end}; "
-        f"max total stopping time at {aggregate['max_total_stopping_time']['n']}, "
-        f"max excursion at {aggregate['max_excursion']['n']}."
-    )
+    summary = _run_completion_summary(run, aggregate)
     return repository.update_run(
         run.id,
         status=RunStatus.COMPLETED,
@@ -1251,32 +2586,55 @@ def _compute_odd_only_reference(
     )
 
 
+def _compute_descent_odd_only_reference(
+    start: int, end: int, *, sample_limit: int = 12,
+) -> AggregateMetrics:
+    """Compute exact standard-Collatz descent reference for odd seeds only."""
+    return compute_range_metrics_parallel_descent_odd(
+        start,
+        end,
+        sample_limit=sample_limit,
+    )
+
+
+def _kernel_reference_metrics(run: Run, seed: int) -> NumberMetrics | None:
+    if run.kernel in {CPU_DIRECT_KERNEL, CPU_ACCELERATED_KERNEL, CPU_PARALLEL_KERNEL, GPU_KERNEL, CPU_PARALLEL_ODD_KERNEL}:
+        return metrics_direct(seed)
+    if run.kernel in {CPU_SIEVE_KERNEL, GPU_SIEVE_KERNEL}:
+        return metrics_descent_direct(seed)
+    if run.kernel == CPU_BARINA_KERNEL:
+        return None
+    return metrics_direct(seed)
+
+
+def _reference_aggregate_for_kernel(
+    run: Run,
+    start: int,
+    end: int,
+) -> AggregateMetrics | None:
+    if run.kernel == CPU_PARALLEL_ODD_KERNEL:
+        return _compute_odd_only_reference(start, end)
+    if run.kernel == CPU_SIEVE_KERNEL:
+        return _compute_descent_odd_only_reference(start, end)
+    if run.kernel == GPU_SIEVE_KERNEL:
+        return compute_range_metrics_parallel_descent(start, end)
+    if run.kernel in {CPU_PARALLEL_KERNEL, GPU_KERNEL}:
+        return compute_range_metrics(start, end, kernel=CPU_DIRECT_KERNEL)
+    if run.kernel in {CPU_DIRECT_KERNEL, CPU_ACCELERATED_KERNEL}:
+        return None
+    if run.kernel == CPU_BARINA_KERNEL:
+        return None
+    return compute_range_metrics(start, end, kernel=CPU_DIRECT_KERNEL)
+
+
 def _validate_full_replay(run: Run) -> tuple[list[str], list[str]]:
-    """Full independent replay — used for small runs."""
+    """Full independent replay used for small runs."""
     mismatches: list[str] = []
     details: list[str] = [
         f"- Mode: full replay ({run.range_end - run.range_start + 1:,} seeds)",
     ]
-    if run.kernel == CPU_PARALLEL_ODD_KERNEL:
-        # Odd-only kernel: reference must also be odd-only (using metrics_direct)
-        reference = _compute_odd_only_reference(run.range_start, run.range_end)
-        candidate = compute_range_metrics(run.range_start, run.range_end, kernel=run.kernel)
-        if _aggregate_validation_payload(reference) != _aggregate_validation_payload(candidate):
-            mismatches.append(
-                f"aggregate mismatch: direct-odd-ref={_aggregate_validation_payload(reference)} "
-                f"candidate={_aggregate_validation_payload(candidate)}"
-            )
-        details.append(f"- Compared {run.kernel} vs per-seed metrics_direct (odd seeds only)")
-    elif run.kernel in {CPU_PARALLEL_KERNEL, GPU_KERNEL}:
-        reference = compute_range_metrics(run.range_start, run.range_end, kernel=CPU_DIRECT_KERNEL)
-        candidate = compute_range_metrics(run.range_start, run.range_end, kernel=run.kernel)
-        if _aggregate_validation_payload(reference) != _aggregate_validation_payload(candidate):
-            mismatches.append(
-                f"aggregate mismatch: direct={_aggregate_validation_payload(reference)} "
-                f"candidate={_aggregate_validation_payload(candidate)}"
-            )
-        details.append(f"- Compared {run.kernel} vs cpu-direct on full range")
-    else:
+
+    if run.kernel in {CPU_DIRECT_KERNEL, CPU_ACCELERATED_KERNEL}:
         for value in range(run.range_start, run.range_end + 1):
             direct = metrics_direct(value)
             accelerated = metrics_accelerated(value)
@@ -1286,6 +2644,37 @@ def _validate_full_replay(run: Run) -> tuple[list[str], list[str]]:
                 )
                 break
         details.append("- Compared metrics_direct vs metrics_accelerated per-seed")
+        return mismatches, details
+
+    if run.kernel == CPU_BARINA_KERNEL:
+        mismatches.append(
+            "cpu-barina uses compressed domain metrics and is not eligible for "
+            "standard value-for-value validation yet."
+        )
+        details.append(
+            "- Validation skipped: cpu-barina is experimental and its step/excursion metrics "
+            "are not semantically identical to standard Collatz."
+        )
+        return mismatches, details
+
+    reference = _reference_aggregate_for_kernel(run, run.range_start, run.range_end)
+    candidate = compute_range_metrics(run.range_start, run.range_end, kernel=run.kernel)
+    if reference is None:
+        mismatches.append(f"No reference aggregate is defined for kernel {run.kernel}.")
+    elif _aggregate_validation_payload(reference) != _aggregate_validation_payload(candidate):
+        mismatches.append(
+            f"aggregate mismatch: reference={_aggregate_validation_payload(reference)} "
+            f"candidate={_aggregate_validation_payload(candidate)}"
+        )
+
+    if run.kernel == CPU_PARALLEL_ODD_KERNEL:
+        details.append(f"- Compared {run.kernel} vs per-seed metrics_direct (odd seeds only)")
+    elif run.kernel == CPU_SIEVE_KERNEL:
+        details.append(f"- Compared {run.kernel} vs standard-Collatz descent reference (odd seeds only)")
+    elif run.kernel == GPU_SIEVE_KERNEL:
+        details.append(f"- Compared {run.kernel} vs standard-Collatz descent reference (full range)")
+    else:
+        details.append(f"- Compared {run.kernel} vs cpu-direct on full range")
     return mismatches, details
 
 
@@ -1295,6 +2684,10 @@ def _validate_record_seeds(run: Run) -> tuple[list[str], list[str]]:
     details: list[str] = []
     metrics = run.metrics or {}
 
+    if run.kernel == CPU_BARINA_KERNEL:
+        details.append("- Record seeds verified: skipped for experimental cpu-barina semantics")
+        return mismatches, details
+
     # Verify the three top-level record holders
     record_keys = {
         "max_total_stopping_time": "total_stopping_time",
@@ -1302,6 +2695,16 @@ def _validate_record_seeds(run: Run) -> tuple[list[str], list[str]]:
         "max_excursion": "max_excursion",
     }
     verified_seeds: set[int] = set()
+
+    def _matches_expected(attr: str, expected_value: int, actual: int) -> bool:
+        # Some kernels temporarily cap stored excursion sample records at int64
+        # max while retaining the exact top-level record via overflow patches.
+        # Validation should treat those capped sample entries as "actual >= cap",
+        # not as a hard mismatch.
+        if attr == "max_excursion" and expected_value == INT64_MAX:
+            return actual >= INT64_MAX
+        return actual == expected_value
+
     for key, attr in record_keys.items():
         record = metrics.get(key)
         if not record or not isinstance(record, dict):
@@ -1310,10 +2713,12 @@ def _validate_record_seeds(run: Run) -> tuple[list[str], list[str]]:
         expected_value = record.get("value")
         if n is None or expected_value is None:
             continue
-        ref = metrics_direct(n)
+        ref = _kernel_reference_metrics(run, n)
+        if ref is None:
+            continue
         actual = getattr(ref, attr)
         verified_seeds.add(n)
-        if actual != expected_value:
+        if not _matches_expected(attr, expected_value, actual):
             mismatches.append(
                 f"Record {key}: seed {n} expected={expected_value} got={actual}"
             )
@@ -1325,13 +2730,15 @@ def _validate_record_seeds(run: Run) -> tuple[list[str], list[str]]:
         expected_value = record.get("value")
         if n is None or expected_value is None or n in verified_seeds:
             continue
-        ref = metrics_direct(n)
+        ref = _kernel_reference_metrics(run, n)
+        if ref is None:
+            continue
         verified_seeds.add(n)
         attr = record_keys.get(metric_name)
         if attr is None:
             continue
         actual = getattr(ref, attr)
-        if actual != expected_value:
+        if not _matches_expected(attr, expected_value, actual):
             mismatches.append(
                 f"Sample record {metric_name}: seed {n} expected={expected_value} got={actual}"
             )
@@ -1352,12 +2759,19 @@ def _validate_random_windows(
     details: list[str] = []
     range_size = run.range_end - run.range_start + 1
 
-    is_odd_only = run.kernel == CPU_PARALLEL_ODD_KERNEL
+    if run.kernel == CPU_BARINA_KERNEL:
+        details.append("- Window validation: skipped for experimental cpu-barina semantics")
+        mismatches.append(
+            "cpu-barina uses compressed domain metrics and is not eligible for "
+            "standard window-by-window validation yet."
+        )
+        return mismatches, details
 
     def _window_reference(ws: int, we: int) -> AggregateMetrics:
-        if is_odd_only:
-            return _compute_odd_only_reference(ws, we)
-        return compute_range_metrics(ws, we, kernel=CPU_DIRECT_KERNEL)
+        reference = _reference_aggregate_for_kernel(run, ws, we)
+        if reference is None:
+            raise ValueError(f"No window reference is defined for kernel {run.kernel}.")
+        return reference
 
     if range_size <= window_size:
         ref = _window_reference(run.range_start, run.range_end)
@@ -1522,7 +2936,7 @@ def validate_run(
             finished_at=utc_now(),
         )
 
-    mode = "full replay" if range_size <= SELECTIVE_VALIDATION_THRESHOLD else "selective"
+    mode = _validation_mode_label(run, range_size=range_size)
     body = (
         f"# Validation for {run.id}\n\n"
         f"Status: **PASSED** ({mode})\n\n"
@@ -1618,16 +3032,23 @@ def process_next_queued_run(
     validate_after_run: bool = False,
 ) -> Run | None:
     _ensure_overflow_recovery_runs(repository)
+    annotate_legacy_validation_failures(repository)
     run = repository.claim_next_run(
         worker_id=worker_id,
         supported_hardware=supported_hardware,
         supported_kernels=supported_kernels,
     )
     if run is None:
-        queued_ids = queue_continuous_verification_runs(
+        queued_ids = queue_legacy_validation_reruns(
             repository,
             supported_hardware=supported_hardware,
+            limit=4 if "cpu" in supported_hardware else 2,
         )
+        if not queued_ids:
+            queued_ids = queue_continuous_verification_runs(
+                repository,
+                supported_hardware=supported_hardware,
+            )
         if not queued_ids:
             return None
         run = repository.claim_next_run(
@@ -1649,10 +3070,16 @@ def process_next_queued_run(
         repository.update_worker(worker_id, status="idle", current_run_id=None)
         return completed_run
     except Exception as exc:
+        tb_text = _traceback_mod.format_exc()
+        logger.error(
+            "Run %s failed on worker %s:\n%s", run.id, worker_id, tb_text,
+        )
+        # Store traceback tail in summary for post-mortem analysis
+        short_tb = tb_text[-400:] if len(tb_text) > 400 else tb_text
         failed_run = repository.update_run(
             run.id,
             status=RunStatus.FAILED,
-            summary=f"Worker {worker_id} failed: {exc}",
+            summary=f"Worker {worker_id} failed: {exc}\n---\n{short_tb}",
             finished_at=utc_now(),
         )
         recovery_ids = _ensure_overflow_recovery_runs(repository, run_ids={run.id})
@@ -1661,7 +3088,7 @@ def process_next_queued_run(
                 run.id,
                 summary=(
                     f"Worker {worker_id} failed: {exc} "
-                    f"Recovery queued via {', '.join(recovery_ids)}."
+                    f"Recovery queued via {', '.join(recovery_ids)}.\n---\n{short_tb}"
                 ),
             )
         repository.update_worker(worker_id, status="idle", current_run_id=None)

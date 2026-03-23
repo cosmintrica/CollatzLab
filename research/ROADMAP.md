@@ -65,25 +65,45 @@ Acceptance:
 
 ## Phase 2: Stronger Compute
 
+Status: largely implemented.
+
 Goals:
 
 - scale interval experiments and replay them reliably;
 - compare implementations and kernels;
-- prepare for GPU and distributed execution.
+- GPU and distributed execution.
 
 Work items:
 
-1. CPU improvements
+1. CPU improvements — **implemented**
 - chunked execution with stronger checkpointing;
-- configurable kernels;
-- larger interval batches and record tracking.
+- 4 configurable kernels (see below);
+- larger interval batches (250M CPU, 500M GPU) and record tracking.
 
-2. GPU worker
-- separate worker contract, not mixed into the API server;
+2. GPU worker — **implemented**
+- separate managed worker process, not mixed into the API server;
 - same run metadata shape as CPU runs;
+- GPU kernel with CUDA shared-memory block reduction;
+- int64 overflow guard with automatic bigint fallback to cpu-parallel;
 - replay on small ranges against CPU before trusting larger sweeps.
-- move hardware discovery toward platform adapters: Windows/Linux/macOS plus x86_64 and ARM64.
-- keep CPU fallback universal, then add GPU runtimes per platform: CUDA, Metal, or CPU-only.
+- platform: currently NVIDIA CUDA (Windows); Metal/cross-platform planned.
+
+### Kernel reference
+
+| Kernel | Description | Typical throughput |
+|--------|-------------|-------------------|
+| `cpu-direct` | Single-threaded Python, per-seed `metrics_direct()` | ~50K val/sec |
+| `cpu-parallel` | Numba JIT, parallel across all CPU cores | ~7M val/sec |
+| `cpu-parallel-odd` | Like cpu-parallel but iterates only odd seeds (2x throughput, mathematically equivalent via v2 induction) | ~14M val/sec |
+| `gpu-collatz-accelerated` | CUDA kernel with per-block shared-memory reduction, 256 threads/block | ~20-50M val/sec |
+
+### Overflow recovery
+
+When the GPU kernel detects a seed whose trajectory exceeds int64 limits, it triggers an overflow guard. The system automatically:
+1. Marks the GPU run as FAILED with a diagnostic summary.
+2. Creates a `recover-prefix` run that preserves the already-computed safe portion as COMPLETED.
+3. Creates a `recover-tail` run using `cpu-parallel` with Python bigint arithmetic for the remaining range.
+4. Deduplicates recovery runs so restarts do not create redundant work.
 
 3. Distributed execution
 - optional remote workers later;
@@ -198,6 +218,36 @@ Core requirements:
 - trust and quarantine rules for unverified remote results;
 - independent rechecks before a remote result affects claim status.
 
+## Next: Hypothesis Math Upgrades (urgent)
+
+Priority improvements for `hypothesis.py` — do soon, before scaling the battery to larger ranges.
+
+### 1. Stratified residue analysis (fix confounding)
+
+**Problem:** `analyze_residue_classes` compares mean TST across classes globally but does not control for seed magnitude. Larger seeds naturally have higher TST (≈ 6.95 · log₂n). A class that happens to contain more large seeds looks anomalously slow — classic Simpson's paradox.
+
+**Fix:** Bin seeds by log₂n (like `test_stopping_time_growth` already does), then compute residue class deviations *within* each bin. A class is anomalous only if it deviates consistently across multiple magnitude bins, not just in aggregate.
+
+**Deliverable:** New or upgraded `analyze_residue_classes_stratified()` that returns per-bin z-scores and an overall verdict.
+
+### 2. Glide / odd-step ratio analysis (new probe)
+
+**Problem:** The current battery tracks total stopping time and max excursion but ignores the *internal structure* of orbits — specifically the ratio of odd steps to even steps (glide). This ratio is directly linked to 2-adic descent behavior and is the core mechanism behind why orbits shrink.
+
+**Fix:** Extend `metrics_direct` to also return `odd_steps` count. Add a new hypothesis function that studies odd-step fraction per seed, per residue class mod 2^k, and per magnitude bin. Compare against the Terras heuristic (expected odd fraction ≈ log₂(3)⁻¹ ≈ 0.63).
+
+**Deliverable:** New `analyze_glide_structure()` function in hypothesis.py, included in the battery.
+
+### 3. Battery scalability test (meta-analysis)
+
+**Problem:** All hypotheses are currently tested at a single range (default 50k). We don't know if "plausible" results survive at 200k, 1M, or 10M. A pattern that appears at 50k but vanishes at 500k is a false signal.
+
+**Fix:** Run the battery at escalating ranges (50k → 200k → 1M) and compare status stability. Flag any hypothesis whose status flips between ranges. This is itself a hypothesis about hypothesis robustness.
+
+**Deliverable:** New `test_battery_scalability()` orchestrator or a CLI command that runs the battery at multiple scales and produces a stability report.
+
+---
+
 ## Rules of Work
 
 - never trust a pattern from one run;
@@ -208,7 +258,6 @@ Core requirements:
 
 ## Current Open Questions
 
-- when to introduce the GPU worker;
-- how large the first meaningful validation intervals should be;
 - how much of the theory workspace should be template-driven;
-- when to add a queue for multiple machines instead of one local node.
+- when to add a queue for multiple machines instead of one local node;
+- whether GPU utilization (~20% due to warp divergence) justifies further kernel optimization or should be accepted as ceiling for this workload.

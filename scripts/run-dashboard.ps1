@@ -9,7 +9,7 @@ $root = Resolve-Path (Join-Path $PSScriptRoot "..")
 Set-Location $root
 
 if ($Mode -eq "vite") {
-  npm run dev --prefix .\dashboard -- --host 127.0.0.1
+  npm run dev --prefix .\dashboard -- --host 0.0.0.0
   exit $LASTEXITCODE
 }
 

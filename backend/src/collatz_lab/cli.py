@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 from pathlib import Path
 
 from .config import Settings
 from .hardware import discover_hardware, validate_execution_request
+from .logutil import silence_numba_cuda_info
 from .repository import LabRepository
 from .services import execute_run, generate_report, validate_run
 from .worker import start_worker_loop
@@ -182,6 +184,23 @@ def main() -> None:
         return
 
     if args.command == "worker" and args.worker_command in {"start", "once"}:
+        # Set up file-based logging for worker processes
+        log_dir = settings.workspace_root / "data" / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        log_file = log_dir / f"worker-{args.name}.log"
+        logging.basicConfig(
+            level=logging.INFO,
+            format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+            handlers=[
+                logging.FileHandler(log_file, encoding="utf-8"),
+                logging.StreamHandler(),
+            ],
+        )
+        silence_numba_cuda_info()
+        logging.getLogger("collatz_lab").info(
+            "Worker %s starting (hardware=%s, poll=%.1fs)",
+            args.name, args.hardware, args.poll_interval,
+        )
         result = start_worker_loop(
             repository,
             name=args.name,

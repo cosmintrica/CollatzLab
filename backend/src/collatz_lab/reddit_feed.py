@@ -12,6 +12,8 @@ from urllib.request import Request, urlopen
 _CACHE_TTL_SECONDS = 90
 _cache_lock = Lock()
 _cache: dict[tuple[str, str, int], tuple[float, dict[str, Any]]] = {}
+# Reddit author of the lab owner — their post gets pinned at the top of the feed
+_OWN_AUTHOR = "cosmintrica"
 _TRACKED_COMMENT_SPECS = (
     {
         "signal": "structure",
@@ -33,6 +35,18 @@ _TRACKED_COMMENT_SPECS = (
         "implemented_note": "This feedback was converted into a concrete theory task rather than left as vague inspiration.",
         "implemented_items": [
             {"id": "COL-0091", "label": "Catalog indirect transforms and surrogate maps"},
+        ],
+    },
+    {
+        "signal": "infrastructure",
+        "title": "Distributed computing platform (BOINC replacement)",
+        "url": "https://www.reddit.com/r/Collatz/comments/1s02k3b/comment/obwofq8/",
+        "takeaway": "johngo54 proposes building a distributed computing platform as a BOINC replacement that runs in Docker containers. This aligns directly with our planned worker-agent architecture: our backend already supports multiple registered workers with hardware profiles, and extending this to remote Docker workers is the natural next step. The BOINC project died — a modern, lightweight, API-driven alternative with reproducible verification and checkpointing is exactly what our architecture enables.",
+        "implemented_note": "This feedback reinforces the distributed worker roadmap already implicit in the lab design. The existing worker registration, hardware capability discovery, and run checkpointing system is the foundation for a Docker-distributed compute lane.",
+        "implemented_items": [
+            {"id": "distributed-workers", "label": "Docker worker agent packaging for distributed compute"},
+            {"id": "worker-registry", "label": "Worker registration and hardware capability system (already in backend)"},
+            {"id": "checkpoint-resume", "label": "Reproducible checkpoint/resume for distributed runs (already in backend)"},
         ],
     },
 )
@@ -154,7 +168,9 @@ def fetch_subreddit_feed(subreddit: str = "Collatz", sort: str = "new", limit: i
     normalized_subreddit = (subreddit or "Collatz").strip() or "Collatz"
     normalized_sort = (sort or "new").strip().lower() or "new"
     normalized_limit = max(1, min(int(limit), 20))
-    cache_key = (normalized_subreddit.lower(), normalized_sort, normalized_limit)
+    # Include spec count in cache key so adding/removing tracked comments
+    # immediately invalidates the cache without a server restart.
+    cache_key = (normalized_subreddit.lower(), normalized_sort, normalized_limit, len(_TRACKED_COMMENT_SPECS))
     now = time.time()
 
     with _cache_lock:
@@ -179,11 +195,12 @@ def fetch_subreddit_feed(subreddit: str = "Collatz", sort: str = "new", limit: i
         if signal == "review":
             review_candidates += 1
         permalink = str(data.get("permalink") or "")
+        author = str(data.get("author") or "unknown")
         posts.append(
             {
                 "id": str(data.get("id") or ""),
                 "title": str(data.get("title") or "Untitled"),
-                "author": str(data.get("author") or "unknown"),
+                "author": author,
                 "permalink": f"https://www.reddit.com{permalink}" if permalink else "",
                 "created_at": _iso_from_utc(data.get("created_utc")),
                 "score": int(data.get("score") or 0),
@@ -191,8 +208,11 @@ def fetch_subreddit_feed(subreddit: str = "Collatz", sort: str = "new", limit: i
                 "flair_text": str(data.get("link_flair_text") or ""),
                 "signal": signal,
                 "excerpt": _excerpt(data),
+                "is_own": author.lower() == _OWN_AUTHOR.lower(),
             }
         )
+    # Pin own post to the top
+    posts.sort(key=lambda p: (0 if p.get("is_own") else 1))
 
     result = {
         "subreddit": normalized_subreddit,

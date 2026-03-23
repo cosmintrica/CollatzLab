@@ -21,6 +21,7 @@ $env:COLLATZ_CPU_PARALLEL_ODD_BATCH_SIZE = "500000000"
 $env:COLLATZ_GPU_BATCH_SIZE = "500000000"
 $env:COLLATZ_GPU_THREADS_PER_BLOCK = "256"
 $env:NUMBA_NUM_THREADS = [string]([Environment]::ProcessorCount)
+$env:PYTHONUNBUFFERED = "1"
 
 $backendSrc = Join-Path $root "backend\src"
 if ($env:PYTHONPATH) {

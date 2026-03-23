@@ -74,7 +74,7 @@ This repo treats the problem conservatively:
 
    ```text
    COLLATZ_LLM_ENABLED=1
-   GEMINI_MODEL=gemini-3-flash-preview
+   GEMINI_MODEL=gemini-2.5-flash
    GEMINI_API_KEY=your_key_here
    COLLATZ_LLM_AUTOPILOT_ENABLED=1
    COLLATZ_LLM_AUTOPILOT_INTERVAL_SECONDS=1800

@@ -46,6 +46,7 @@ from .schemas import (
     Task,
     Worker,
 )
+from .logutil import is_noise_log_entry
 from .services import execute_run, generate_report, probe_modular_claim, validate_run
 
 
@@ -134,6 +135,7 @@ class LLMAutopilotConfigRequest(BaseModel):
 
 
 class ComputeProfileRequest(BaseModel):
+    continuous_enabled: bool = True
     system_percent: int = 100
     cpu_percent: int = 100
     gpu_percent: int = 100
@@ -220,6 +222,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.post("/api/compute/profile", response_model=ComputeProfile)
     def update_compute_profile(request: ComputeProfileRequest):
         return repository.update_compute_profile(
+            continuous_enabled=request.continuous_enabled,
             system_percent=request.system_percent,
             cpu_percent=request.cpu_percent,
             gpu_percent=request.gpu_percent,
@@ -574,5 +577,96 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             bin_count=request.bin_count,
         )
         return result.__dict__
+
+    @app.get("/api/paper")
+    def get_paper():
+        import json
+        from pathlib import Path
+        paper_path = Path(__file__).parent.parent.parent.parent / "research" / "paper.json"
+        if not paper_path.exists():
+            raise HTTPException(status_code=404, detail="paper.json not found")
+        return json.loads(paper_path.read_text(encoding="utf-8"))
+
+    @app.get("/api/logs")
+    def get_logs(
+        q: str = "",
+        level: str = "",
+        source: str = "",
+        limit: int = 500,
+    ):
+        """Aggregate logs from worker log files and recent failed runs."""
+        import re
+        from pathlib import Path
+
+        entries: list[dict] = []
+        log_dir = settings.workspace_root / "data" / "logs"
+        log_line_re = re.compile(
+            r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d+)\s+"
+            r"(DEBUG|INFO|WARNING|ERROR|CRITICAL)\s+"
+            r"(\S+):\s+(.*)$"
+        )
+
+        if log_dir.is_dir():
+            for log_file in sorted(log_dir.glob("worker-*.log")):
+                worker_name = log_file.stem.replace("worker-", "")
+                try:
+                    lines = log_file.read_text(encoding="utf-8", errors="replace").splitlines()
+                except OSError:
+                    continue
+                current: dict | None = None
+                for line in lines:
+                    m = log_line_re.match(line)
+                    if m:
+                        if current:
+                            entries.append(current)
+                        current = {
+                            "ts": m.group(1).replace(",", "."),
+                            "level": m.group(2),
+                            "logger": m.group(3),
+                            "msg": m.group(4),
+                            "source": worker_name,
+                            "kind": "worker",
+                        }
+                    elif current:
+                        current["msg"] += "\n" + line
+                if current:
+                    entries.append(current)
+
+        # Add recent failed runs as log entries
+        for run in repository.list_runs():
+            if run.status.value != "failed":
+                continue
+            summary = run.summary or "No summary"
+            # Superseded validation failures are resolved — demote to INFO
+            superseded = "Superseded by" in summary and "(completed)" in summary
+            ts = run.finished_at or run.created_at or ""
+            entries.append({
+                "ts": ts.replace("T", " ").replace("+00:00", ""),
+                "level": "INFO" if superseded else "ERROR",
+                "logger": "run",
+                "msg": f"[{run.id}] {summary}",
+                "source": run.hardware or "unknown",
+                "kind": "run-superseded" if superseded else "run-failure",
+            })
+
+        # Filter
+        q_lower = q.lower()
+        level_upper = level.upper()
+        source_lower = source.lower()
+
+        def matches(e: dict) -> bool:
+            if not q_lower and is_noise_log_entry(e):
+                return False
+            if q_lower and q_lower not in e["msg"].lower() and q_lower not in e.get("source", "").lower():
+                return False
+            if level_upper and e["level"] != level_upper:
+                return False
+            if source_lower and source_lower not in e.get("source", "").lower():
+                return False
+            return True
+
+        filtered = [e for e in entries if matches(e)]
+        filtered.sort(key=lambda e: e.get("ts", ""), reverse=True)
+        return filtered[:limit]
 
     return app

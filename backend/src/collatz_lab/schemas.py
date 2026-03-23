@@ -31,6 +31,18 @@ class RunStatus(StrEnum):
     FAILED = "failed"
 
 
+# Valid state transitions for runs.  Any transition not listed here is
+# rejected by ``LabRepository.update_run`` so callers cannot
+# accidentally move a run backwards (e.g. COMPLETED → QUEUED).
+VALID_RUN_TRANSITIONS: dict[RunStatus, frozenset[RunStatus]] = {
+    RunStatus.QUEUED: frozenset({RunStatus.RUNNING, RunStatus.COMPLETED, RunStatus.FAILED}),
+    RunStatus.RUNNING: frozenset({RunStatus.COMPLETED, RunStatus.FAILED}),
+    RunStatus.COMPLETED: frozenset({RunStatus.VALIDATED, RunStatus.FAILED}),
+    RunStatus.VALIDATED: frozenset(),
+    RunStatus.FAILED: frozenset({RunStatus.QUEUED}),
+}
+
+
 class TaskStatus(StrEnum):
     OPEN = "open"
     IN_PROGRESS = "in_progress"
@@ -42,6 +54,7 @@ class WorkerStatus(StrEnum):
     IDLE = "idle"
     RUNNING = "running"
     OFFLINE = "offline"
+    ERROR = "error"
 
 
 class ArtifactKind(StrEnum):
@@ -342,11 +355,14 @@ class RedditFeedPost(BaseModel):
     flair_text: str = ""
     signal: str = "watch"
     excerpt: str = ""
+    is_own: bool = False
 
 
 class RedditTrackedAction(BaseModel):
     id: str
     label: str
+    kind: str = "task"
+    target: str = ""
 
 
 class RedditTrackedComment(BaseModel):
@@ -389,6 +405,7 @@ class DashboardSummary(BaseModel):
 
 
 class ComputeProfile(BaseModel):
+    continuous_enabled: bool = True
     system_percent: int = 100
     cpu_percent: int = 100
     gpu_percent: int = 100

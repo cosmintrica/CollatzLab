@@ -8,6 +8,20 @@
     <meta name="description" content="Local-first Collatz research platform with live math, evidence tracking, and guarded source review." />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <link rel="apple-touch-icon" href="/icon.svg" />
+    <script>
+      (function () {
+        try {
+          var dark = localStorage.getItem("collatz-theme") === "dark";
+          document.documentElement.setAttribute("data-theme", dark ? "dark" : "light");
+          if (dark) {
+            var icon = document.querySelector('link[rel="icon"]');
+            var apple = document.querySelector('link[rel="apple-touch-icon"]');
+            if (icon) icon.href = "/favicon-dark.svg";
+            if (apple) apple.href = "/icon-dark.svg";
+          }
+        } catch (e) {}
+      })();
+    </script>
     <link rel="manifest" href="/site.webmanifest" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />

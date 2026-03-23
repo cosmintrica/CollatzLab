@@ -1,205 +1,40 @@
-import { startTransition, useDeferredValue, useEffect, useRef, useState } from "react";
+import { startTransition, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState, memo } from "react";
+import {
+  apiBase, endpoints, tabs, liveMathSections, defaultDirectionOptions,
+  sourceTypeOptions, sourceClaimTypeOptions, sourceStatusOptions,
+  mapVariantOptions, llmModelSuggestions, rubricFieldOptions,
+  defaultFallacyCatalog, claimRunRelationOptions, directionGuide, evidenceGuide
+} from "./config.js";
+import { readJson, readOptionalJson, postJson, deleteJson } from "./api.js";
+import {
+  fileSafeLabel, downloadText, downloadJson, triggerDownload, exportJsonFile, exportTextFile,
+  asList, prettyLabel, normalize, timestampValue, formatTimestamp, formatRelativeTime, formatCompactTimestamp,
+  latestTimestamp, artifactLabel, includesQuery, parseCsvList,
+  runRangeSize, approximatePowerOfTwo, powerGapToMilestone, runRangeMagnitude, runMilestoneLabel,
+  runRangeMagnitudeLatex, runMilestoneLabelLatex,
+  extractFailureReason, describeRunPurpose, describeRunStatusDetail, classifyRunCategory,
+  parseClaimNotes, appendCsvTag, rubricValueToSelect, selectToRubricValue,
+  countBy, taskIntent, formatMathNum
+} from "./utils.js";
+import {
+  StatusPill, SummaryCard, SectionIntro, MathNum, Legend, EmptyState,
+  ShowMoreButton, FilterField, FilterBar, SectionSubnav, CapabilityCard, KatexExpr
+} from "./components/ui.jsx";
+import MathTicker from "./components/MathTicker.jsx";
+import LiveMathNavigator from "./components/LiveMathNavigator.jsx";
+import RunRail from "./components/RunRail.jsx";
+import RedditIntelRail from "./components/RedditIntelRail.jsx";
+import ComputeBudgetRail from "./components/ComputeBudgetRail.jsx";
+import ResearchPaper from "./components/ResearchPaper.jsx";
+import LogsPanel from "./components/LogsPanel.jsx";
+import {
+  firstPositiveInteger, buildOrbit, twoAdicValuation, nextCollatzValue,
+  orbitStats, buildMathTrace, summarizeMetric, buildMetricSummary,
+  buildRecordTape, runProgress, runLiveDetails, describeCapability,
+  orbitSeedFromRun, orbitSeedLabel, describeOrbitSeed
+} from "./orbitCalc.js";
 
-const apiBase = import.meta.env.VITE_API_BASE_URL ?? "http://127.0.0.1:8000";
 
-const endpoints = {
-  summary: `${apiBase}/api/summary`,
-  directions: `${apiBase}/api/directions`,
-  tasks: `${apiBase}/api/tasks`,
-  runs: `${apiBase}/api/runs`,
-  claims: `${apiBase}/api/claims`,
-  claimRunLinks: `${apiBase}/api/claim-run-links`,
-  linkClaimRun: `${apiBase}/api/claims/link-run`,
-  sources: `${apiBase}/api/sources`,
-  artifacts: `${apiBase}/api/artifacts`,
-  artifactContent: (artifactId) => `${apiBase}/api/artifacts/${artifactId}/content`,
-  artifactDownload: (artifactId) => `${apiBase}/api/artifacts/${artifactId}/download`,
-  consensusBaseline: `${apiBase}/api/consensus-baseline`,
-  computeProfile: `${apiBase}/api/compute/profile`,
-  llmStatus: `${apiBase}/api/llm/status`,
-  llmSetup: `${apiBase}/api/llm/setup`,
-  llmAutopilotStatus: `${apiBase}/api/llm/autopilot/status`,
-  llmAutopilotConfig: `${apiBase}/api/llm/autopilot/config`,
-  llmAutopilot: `${apiBase}/api/llm/autopilot/run`,
-  redditFeed: `${apiBase}/api/external/reddit/collatz?limit=10`,
-  fallacyTags: `${apiBase}/api/review/fallacy-tags`,
-  sourceReviews: (sourceId) => `${apiBase}/api/sources/${sourceId}/reviews`,
-  sourceReviewDraft: (sourceId) => `${apiBase}/api/sources/${sourceId}/review-draft`,
-  modularProbe: `${apiBase}/api/review/probes/modular`,
-  hardware: `${apiBase}/api/workers/capabilities`,
-  workers: `${apiBase}/api/workers`,
-  sourceDelete: (sourceId) => `${apiBase}/api/sources/${sourceId}`
-};
-
-const tabs = [
-  { id: "overview", label: "Start Here" },
-  { id: "live-math", label: "Live Math" },
-  { id: "directions", label: "Tracks" },
-  { id: "community", label: "Community" },
-  { id: "evidence", label: "Evidence" },
-  { id: "queue", label: "Operations" },
-  { id: "guide", label: "Guide" }
-];
-
-const liveMathSections = [
-  { id: "live-trace", label: "Trace" },
-  { id: "live-ledger", label: "Ledger" },
-  { id: "live-records", label: "Records" }
-];
-
-const defaultDirectionOptions = [
-  { slug: "verification", title: "Verification" },
-  { slug: "inverse-tree-parity", title: "Inverse Tree Parity" },
-  { slug: "lemma-workspace", title: "Lemma Workspace" },
-  { slug: "two-adic-v2", title: "2-adic / v2 Explorer" }
-];
-
-const sourceTypeOptions = [
-  "peer_reviewed",
-  "preprint",
-  "self_published",
-  "forum",
-  "blog",
-  "qa",
-  "wiki",
-  "media",
-  "internal"
-];
-
-const sourceClaimTypeOptions = [
-  "open_problem_consensus",
-  "partial_result",
-  "computational_verification",
-  "proof_attempt",
-  "heuristic",
-  "discussion"
-];
-
-const sourceStatusOptions = ["intake", "under_review", "flagged", "supported", "refuted", "context"];
-
-const mapVariantOptions = ["unspecified", "standard", "shortcut", "odd_only", "inverse_tree"];
-const llmModelSuggestions = [
-  "gemini-2.5-flash",
-  "gemini-2.5-flash-lite",
-  "gemini-flash-latest",
-  "gemini-2.5-pro",
-  "gemini-3-flash-preview"
-];
-
-const rubricFieldOptions = [
-  { key: "peer_reviewed", label: "Peer reviewed" },
-  { key: "acknowledged_errors", label: "Acknowledged errors" },
-  { key: "defines_map_variant", label: "Defines map variant" },
-  { key: "distinguishes_empirical_from_proof", label: "Separates proof from evidence" },
-  { key: "proves_descent", label: "Proves descent" },
-  { key: "proves_cycle_exclusion", label: "Proves cycle exclusion" },
-  { key: "uses_statistical_argument", label: "Uses statistical argument" },
-  { key: "validation_backed", label: "Validation backed" }
-];
-
-const defaultFallacyCatalog = [
-  {
-    tag: "empirical-not-proof",
-    label: "Empirical is not proof",
-    description: "Finite computation is evidence, not a universal theorem."
-  },
-  {
-    tag: "almost-all-not-all",
-    label: "Almost all is not all",
-    description: "Density results do not settle every integer."
-  },
-  {
-    tag: "circular-descent",
-    label: "Circular descent",
-    description: "The source assumes the same global descent it claims to prove."
-  },
-  {
-    tag: "unchecked-generalization",
-    label: "Unchecked generalization",
-    description: "A local pattern is promoted to all n without a valid universal step."
-  },
-  {
-    tag: "reverse-tree-gap",
-    label: "Reverse tree gap",
-    description: "The inverse-tree picture is not enough without a forward implication."
-  },
-  {
-    tag: "publishing-does-not-imply-validity",
-    label: "Publication is not validation",
-    description: "Posting or publishing a manuscript does not make it correct."
-  },
-  {
-    tag: "variant-confusion",
-    label: "Variant confusion",
-    description: "Standard, shortcut, odd-only, or inverse-tree variants are mixed together."
-  },
-  {
-    tag: "proof-by-large-search",
-    label: "Proof by large search",
-    description: "A large verified interval is treated as if it solved the problem."
-  },
-  {
-    tag: "statistical-leap",
-    label: "Statistical leap",
-    description: "Average-case language is used to conclude a deterministic theorem."
-  }
-];
-
-const claimRunRelationOptions = ["supports", "tests", "refutes", "motivates", "depends_on"];
-
-const directionGuide = {
-  verification: {
-    label: "Evidence track",
-    role: "Runs CPU/GPU sweeps, compares kernels, and falsifies weak heuristics.",
-    success: "Finds reproducible evidence or real search-space reduction.",
-    caution: "This is not the proof track by itself.",
-    evidence: "run-heavy lane"
-  },
-  "inverse-tree-parity": {
-    label: "Structure track",
-    role: "Explores odd predecessors, parity vectors, and modular filters.",
-    success: "Finds structural constraints that survive wider testing.",
-    caution: "Reverse-tree intuition still needs a forward implication.",
-    evidence: "artifact-heavy lane"
-  },
-  "lemma-workspace": {
-    label: "Proof track",
-    role: "Tracks lemmas, dependencies, counterexamples, and source review.",
-    success: "Promotes exact claims toward formalization with linked evidence.",
-    caution: "Claims stay provisional until evidence and review agree.",
-    evidence: "claim-heavy lane"
-  },
-  "two-adic-v2": {
-    label: "2-adic track",
-    role: "Studies v2(3n+1), odd-only compression, and 2-adic residue structure.",
-    success: "Finds stable odd-step or valuation regularities that survive extension.",
-    caution: "2-adic patterns are signals, not proofs, until they produce a falsifiable next step.",
-    evidence: "odd-step structural lane"
-  }
-};
-
-const evidenceGuide = [
-  {
-    kind: "validated-result",
-    title: "Validated result",
-    detail: "A run that passed an independent replay. This is high-trust computational evidence."
-  },
-  {
-    kind: "claim",
-    title: "Claim",
-    detail: "A mathematical statement. It is theory, not evidence, until runs or artifacts support it."
-  },
-  {
-    kind: "artifact",
-    title: "Artifact",
-    detail: "A saved file: JSON output, report, note, or proof draft you can preview or download."
-  },
-  {
-    kind: "run",
-    title: "Raw run",
-    detail: "A compute record. Useful, but lower-trust than a validated result until replay succeeds."
-  }
-];
 
 const initialState = {
   summary: null,
@@ -207,787 +42,23 @@ const initialState = {
   tasks: [],
   runs: [],
   claims: [],
+  hypotheses: [],
   claimRunLinks: [],
   sources: [],
   artifacts: [],
   baseline: null,
-  computeProfile: null,
+  fallacyTags: [],
   llmStatus: null,
   autopilotStatus: null,
-  redditFeed: null,
-  fallacyTags: [],
+  feed: null,
   hardware: [],
   workers: [],
+  computeProfile: { continuous_enabled: true, system_percent: 100, cpu_percent: 100, gpu_percent: 100, updated_at: null },
   error: "",
   loading: true,
   lastUpdated: ""
 };
 
-async function readJson(url) {
-  const response = await fetch(url);
-  if (!response.ok) {
-    throw new Error(`Request failed for ${url}`);
-  }
-  return response.json();
-}
-
-async function readOptionalJson(url) {
-  try {
-    const response = await fetch(url);
-    if (!response.ok) {
-      return null;
-    }
-    return response.json();
-  } catch {
-    return null;
-  }
-}
-
-async function postJson(url, payload) {
-  const options = {
-    method: "POST",
-    headers: {}
-  };
-  if (payload !== undefined) {
-    options.headers["Content-Type"] = "application/json";
-    options.body = JSON.stringify(payload);
-  }
-  const response = await fetch(url, options);
-  if (!response.ok) {
-    let message = `Request failed for ${url}`;
-    try {
-      const body = await response.json();
-      message = body.detail ?? body.message ?? message;
-    } catch {
-      // Ignore JSON parse failures and fall back to the generic message.
-    }
-    throw new Error(message);
-  }
-  return response.json();
-}
-
-async function deleteJson(url) {
-  const response = await fetch(url, { method: "DELETE" });
-  if (!response.ok) {
-    let message = `Request failed for ${url}`;
-    try {
-      const body = await response.json();
-      message = body.detail ?? body.message ?? message;
-    } catch {
-      // Ignore JSON parse failures.
-    }
-    throw new Error(message);
-  }
-  return response.json();
-}
-
-function fileSafeLabel(value) {
-  return String(value ?? "evidence")
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "") || "evidence";
-}
-
-function downloadText(filename, content, mimeType = "text/plain;charset=utf-8") {
-  const blob = new Blob([content], { type: mimeType });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = filename;
-  document.body.appendChild(link);
-  link.click();
-  link.remove();
-  URL.revokeObjectURL(url);
-}
-
-function downloadJson(filename, payload) {
-  downloadText(filename, JSON.stringify(payload, null, 2), "application/json;charset=utf-8");
-}
-
-function triggerDownload(filename, content, type) {
-  const blob = new Blob([content], { type });
-  const objectUrl = URL.createObjectURL(blob);
-  const anchor = document.createElement("a");
-  anchor.href = objectUrl;
-  anchor.download = filename;
-  document.body.append(anchor);
-  anchor.click();
-  anchor.remove();
-  URL.revokeObjectURL(objectUrl);
-}
-
-function exportJsonFile(filename, payload) {
-  triggerDownload(filename, `${JSON.stringify(payload, null, 2)}\n`, "application/json");
-}
-
-function exportTextFile(filename, payload) {
-  triggerDownload(filename, payload, "text/plain;charset=utf-8");
-}
-
-function asList(payload, keys) {
-  if (!payload) {
-    return [];
-  }
-  if (Array.isArray(payload)) {
-    return payload;
-  }
-  for (const key of keys) {
-    if (Array.isArray(payload[key])) {
-      return payload[key];
-    }
-  }
-  return [];
-}
-
-function prettyLabel(value) {
-  return String(value).replaceAll("-", " ").replaceAll("_", " ");
-}
-
-function normalize(value) {
-  return String(value ?? "").trim().toLowerCase();
-}
-
-function timestampValue(value) {
-  if (!value) {
-    return 0;
-  }
-  const parsed = Date.parse(value);
-  return Number.isFinite(parsed) ? parsed : 0;
-}
-
-function formatTimestamp(value) {
-  if (!value) {
-    return "No timestamp";
-  }
-  const parsed = new Date(value);
-  if (Number.isNaN(parsed.getTime())) {
-    return value;
-  }
-  return parsed.toLocaleString();
-}
-
-function formatRelativeTime(value) {
-  if (!value) {
-    return "unknown time";
-  }
-  const timestamp = Date.parse(value);
-  if (!Number.isFinite(timestamp)) {
-    return value;
-  }
-  const diffSeconds = Math.round((Date.now() - timestamp) / 1000);
-  const abs = Math.abs(diffSeconds);
-  if (abs < 60) {
-    return diffSeconds >= 0 ? "just now" : "in a moment";
-  }
-  if (abs < 3600) {
-    const minutes = Math.round(abs / 60);
-    return diffSeconds >= 0 ? `${minutes}m ago` : `in ${minutes}m`;
-  }
-  if (abs < 86400) {
-    const hours = Math.round(abs / 3600);
-    return diffSeconds >= 0 ? `${hours}h ago` : `in ${hours}h`;
-  }
-  const days = Math.round(abs / 86400);
-  return diffSeconds >= 0 ? `${days}d ago` : `in ${days}d`;
-}
-
-function latestTimestamp(...values) {
-  return [...values]
-    .filter(Boolean)
-    .sort((left, right) => timestampValue(right) - timestampValue(left))[0] || "";
-}
-
-function artifactLabel(path, fallback) {
-  if (!path) {
-    return fallback;
-  }
-  const pieces = String(path).split(/[\\/]/);
-  return pieces[pieces.length - 1] || fallback;
-}
-
-function includesQuery(values, query) {
-  const needle = normalize(query);
-  if (!needle) {
-    return true;
-  }
-  return values.some((value) => normalize(value).includes(needle));
-}
-
-function parseCsvList(value) {
-  return String(value ?? "")
-    .split(",")
-    .map((item) => item.trim())
-    .filter(Boolean);
-}
-
-function runRangeSize(run) {
-  if (!run) {
-    return 0;
-  }
-  return Math.max(0, (Number(run.range_end) || 0) - (Number(run.range_start) || 0) + 1);
-}
-
-function approximatePowerOfTwo(value) {
-  const numeric = Number(value);
-  if (!Number.isFinite(numeric) || numeric <= 0) {
-    return "";
-  }
-  return `~2^${Math.log2(numeric).toFixed(2)}`;
-}
-
-function powerGapToMilestone(value, milestoneExponent = 71) {
-  const numeric = Number(value);
-  if (!Number.isFinite(numeric) || numeric <= 0) {
-    return "";
-  }
-  const gap = milestoneExponent - Math.log2(numeric);
-  return gap >= 0
-    ? `${gap.toFixed(2)} below 2^${milestoneExponent}`
-    : `${Math.abs(gap).toFixed(2)} above 2^${milestoneExponent}`;
-}
-
-function runRangeMagnitude(run) {
-  if (!run) {
-    return "";
-  }
-  const startLabel = approximatePowerOfTwo(run.range_start);
-  const endLabel = approximatePowerOfTwo(run.range_end);
-  if (!startLabel || !endLabel) {
-    return "";
-  }
-  return `${startLabel} -> ${endLabel}`;
-}
-
-function runMilestoneLabel(run) {
-  if (!run) {
-    return "";
-  }
-  const topValue = Math.max(
-    Number(run.range_end) || 0,
-    Number(run.checkpoint?.last_processed) || 0,
-    Number(run.metrics?.last_processed) || 0
-  );
-  if (topValue <= 0) {
-    return "";
-  }
-  const powerLabel = approximatePowerOfTwo(topValue);
-  const gapLabel = powerGapToMilestone(topValue, 71);
-  return `${powerLabel} | ${gapLabel}`;
-}
-
-function extractFailureReason(summary) {
-  const text = String(summary || "").trim();
-  if (!text) {
-    return "";
-  }
-  const marker = text.toLowerCase().indexOf(" failed: ");
-  if (marker >= 0) {
-    return text.slice(marker + 9).trim();
-  }
-  return text;
-}
-
-function describeRunPurpose(run) {
-  if (!run) {
-    return "No run selected.";
-  }
-  const text = `${run.name || ""} ${run.summary || ""}`.toLowerCase();
-  if ((run.name || "").startsWith("recover-prefix-")) {
-    return "Recovered exact prefix preserved from a run that hit the signed-64-bit frontier.";
-  }
-  if ((run.name || "").startsWith("recover-tail-")) {
-    return "Exact overflow-safe CPU recovery for the uncovered tail after a signed-64-bit frontier failure.";
-  }
-  if (run.direction_slug === "verification") {
-    if (text.includes("continuous") && run.hardware === "gpu") {
-      return "Continuous GPU verification stream for large-interval record search, verification throughput, and fresh live checkpoints.";
-    }
-    if (text.includes("continuous") && run.hardware === "cpu") {
-      return "Continuous CPU verification stream for bounded interval evidence, replay coverage, and record tracking.";
-    }
-    if (run.status === "validated") {
-      return "Bounded verification run that already passed an independent replay.";
-    }
-    return "Verification sweep used for record tracking, replay, and later validation.";
-  }
-  if (run.direction_slug === "inverse-tree-parity") {
-    return "Structure-facing run used to test parity or residue ideas against actual intervals.";
-  }
-  if (run.direction_slug === "two-adic-v2") {
-    return "2-adic / odd-step probe used to study v2(3n+1) and compressed odd dynamics.";
-  }
-  if (run.direction_slug === "lemma-workspace") {
-    return "Claim-supporting run linked back into the proof-facing workspace.";
-  }
-  return "General Collatz compute record.";
-}
-
-function describeRunStatusDetail(run) {
-  if (!run) {
-    return "";
-  }
-  if (run.status === "failed") {
-    return extractFailureReason(run.summary);
-  }
-  if ((run.name || "").startsWith("recover-tail-")) {
-    return "Exact CPU fallback is slower here because it avoids the signed-64-bit overflow frontier.";
-  }
-  return "";
-}
-
-function parseClaimNotes(notes) {
-  const raw = String(notes || "").trim();
-  if (!raw) {
-    return { snapshot: null, history: [], raw: "" };
-  }
-
-  const managedMatch = raw.match(/<!-- auto-consolidation:start -->([\s\S]*?)<!-- auto-consolidation:end -->/);
-  const managedText = managedMatch?.[1]?.trim() || "";
-  const readManagedValue = (label) => {
-    const pattern = new RegExp(`- ${label}: ([^\\n]+)`);
-    return managedText.match(pattern)?.[1]?.trim() || "";
-  };
-  const runCoverage = readManagedValue("Run coverage");
-  const snapshot = managedText
-    ? {
-        updatedAt: readManagedValue("Last updated at"),
-        sourceTask: readManagedValue("Last source task"),
-        entryCount: readManagedValue("Consolidated record entries"),
-        uniqueSeeds: readManagedValue("Unique record seeds"),
-        linkedRuns: readManagedValue("Supporting runs currently linked"),
-        runCoveragePreview: runCoverage
-          ? runCoverage.split(",").map((item) => item.trim()).filter(Boolean).slice(0, 8)
-          : []
-      }
-    : null;
-
-  const history = [...raw.matchAll(
-    /## Task execution update ([^\n]+)\s+[\s\S]*?- Source task: ([^\n]+)\s+[\s\S]*?- Consolidated record entries: ([^\n]+)\s+[\s\S]*?- Unique record seeds: ([^\n]+)\s+[\s\S]*?- Supporting runs linked in this pass: ([^\n]+)/g
-  )].map((match) => ({
-    updatedAt: match[1].trim(),
-    sourceTask: match[2].trim(),
-    entryCount: match[3].trim(),
-    uniqueSeeds: match[4].trim(),
-    linkedRuns: match[5].trim()
-  }));
-
-  return { snapshot, history, raw };
-}
-
-function appendCsvTag(value, tag) {
-  const next = parseCsvList(value);
-  if (!next.includes(tag)) {
-    next.push(tag);
-  }
-  return next.join(", ");
-}
-
-function rubricValueToSelect(value) {
-  if (value === true) {
-    return "yes";
-  }
-  if (value === false) {
-    return "no";
-  }
-  return "unknown";
-}
-
-function selectToRubricValue(value) {
-  if (value === "yes") {
-    return true;
-  }
-  if (value === "no") {
-    return false;
-  }
-  return null;
-}
-
-function countBy(items, getKey) {
-  return items.reduce((accumulator, item) => {
-    const key = getKey(item) || "unknown";
-    accumulator[key] = (accumulator[key] || 0) + 1;
-    return accumulator;
-  }, {});
-}
-
-function taskIntent(task) {
-  const text = `${task?.title || ""} ${task?.description || ""}`.toLowerCase();
-  if (
-    task?.kind === "experiment" ||
-    task?.direction_slug === "verification" ||
-    ["sweep", "queue", "run", "kernel", "checkpoint"].some((keyword) => text.includes(keyword))
-  ) {
-    return "compute";
-  }
-  return "theory";
-}
-
-function StatusPill({ value }) {
-  return <span className={`status-pill status-${value}`}>{prettyLabel(value)}</span>;
-}
-
-function SummaryCard({ label, value, note }) {
-  return (
-    <article className="summary-card">
-      <span className="summary-label">{label}</span>
-      <strong>{value}</strong>
-      <p>{note}</p>
-    </article>
-  );
-}
-
-function SectionIntro({ title, text, action }) {
-  return (
-    <div className="section-intro">
-      <div>
-        <h2>{title}</h2>
-        <p>{text}</p>
-      </div>
-      {action}
-    </div>
-  );
-}
-
-function formatMathNum(n) {
-  const num = typeof n === "bigint" ? Number(n) : Number(n);
-  if (num === 0) return { m: "0", e: null };
-  const abs = Math.abs(num);
-  if (abs < 100000) return { m: num.toLocaleString(), e: null };
-  const e = Math.floor(Math.log10(abs));
-  const mantissa = num / 10 ** e;
-  const mStr = mantissa === Math.floor(mantissa) ? String(Math.floor(mantissa)) : mantissa.toFixed(2).replace(/0+$/, "").replace(/\.$/, "");
-  return { m: mStr, e };
-}
-
-function MathNum({ value }) {
-  const { m, e } = formatMathNum(value);
-  if (e === null) return <>{m}</>;
-  return <>{m}{"\u00b7"}10<sup>{e}</sup></>;
-}
-
-function buildTickerEquations(orbit) {
-  const equations = [];
-  if (orbit.length > 0) {
-    for (let i = 0; i < orbit.length; i++) {
-      const val = BigInt(orbit[i].value);
-      if (val === 1n) {
-        equations.push({ key: `t-${i}`, step: i, value: "1", nextValue: "1", isEven: true, terminal: true });
-        break;
-      }
-      const isEven = val % 2n === 0n;
-      const nextVal = isEven ? val / 2n : 3n * val + 1n;
-      equations.push({ key: `t-${i}`, step: i, value: String(val), nextValue: String(nextVal), isEven, terminal: false });
-    }
-  }
-  if (equations.length === 0) {
-    return [
-      { key: "idle-a", idle: true },
-      { key: "idle-b", idle: true, alt: true },
-      { key: "idle-c", idle: true },
-      { key: "idle-d", idle: true, alt: true }
-    ];
-  }
-  return equations;
-}
-
-function MathTicker({ run, orbit, frameIndex, isActive }) {
-  const wrapRef = useRef(null);
-  const trackRef = useRef(null);
-  const segmentRef = useRef(null);
-  const segmentWidthRef = useRef(0);
-  const offsetRef = useRef(0);
-  const animationRef = useRef(0);
-  const lastTickRef = useRef(0);
-  const pendingEquationsRef = useRef(null);
-  const displayedSignatureRef = useRef("");
-  const [segmentCopies, setSegmentCopies] = useState(4);
-  const [displayedEquations, setDisplayedEquations] = useState(() => buildTickerEquations(orbit));
-  const orbitSignature = orbit.length > 0 ? orbit.map((item) => item.value).join("|") : "idle";
-  const pixelsPerSecond = displayedEquations.length < 8 ? 14 : displayedEquations.length < 16 ? 18 : 24;
-
-  useEffect(() => {
-    const nextEquations = buildTickerEquations(orbit);
-    const nextIsIdle = nextEquations.every((equation) => equation.idle);
-    if (displayedSignatureRef.current === "") {
-      displayedSignatureRef.current = orbitSignature;
-      setDisplayedEquations(nextEquations);
-      return;
-    }
-    if (displayedSignatureRef.current === orbitSignature) {
-      return;
-    }
-    if (nextIsIdle) {
-      return;
-    }
-    pendingEquationsRef.current = {
-      equations: nextEquations,
-      signature: orbitSignature
-    };
-  }, [orbitSignature, orbit]);
-
-  useEffect(() => {
-    const segment = segmentRef.current;
-    if (!segment) {
-      return undefined;
-    }
-
-    const measure = () => {
-      const previousWidth = segmentWidthRef.current;
-      const width = segment.scrollWidth || segment.getBoundingClientRect().width || 0;
-      const wrapWidth = wrapRef.current?.clientWidth || 0;
-      if (previousWidth > 0 && width > 0) {
-        const ratio = offsetRef.current / previousWidth;
-        offsetRef.current = ratio * width;
-      }
-      segmentWidthRef.current = width;
-      if (width > 0) {
-        const neededCopies = Math.max(5, Math.ceil((wrapWidth || width) / width) + 4);
-        setSegmentCopies((current) => (current === neededCopies ? current : neededCopies));
-      }
-      if (trackRef.current && width > 0) {
-        if (offsetRef.current >= width) {
-          offsetRef.current %= width;
-        }
-        trackRef.current.style.transform = `translate3d(${-offsetRef.current}px, 0, 0)`;
-      }
-    };
-
-    measure();
-    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(measure);
-    observer?.observe(segment);
-    window.addEventListener("resize", measure);
-    return () => {
-      observer?.disconnect();
-      window.removeEventListener("resize", measure);
-    };
-  }, [run?.id, displayedEquations]);
-
-  useEffect(() => {
-    const track = trackRef.current;
-    if (!track) {
-      return undefined;
-    }
-    if (!isActive) {
-      lastTickRef.current = 0;
-      track.style.transform = `translate3d(${-offsetRef.current}px, 0, 0)`;
-      return undefined;
-    }
-
-    let cancelled = false;
-    lastTickRef.current = 0;
-
-    const tick = (timestamp) => {
-      if (cancelled) {
-        return;
-      }
-      if (lastTickRef.current === 0) {
-        lastTickRef.current = timestamp;
-      }
-      const deltaSeconds = (timestamp - lastTickRef.current) / 1000;
-      lastTickRef.current = timestamp;
-      const segmentWidth = segmentWidthRef.current;
-      if (segmentWidth > 0) {
-        offsetRef.current = (offsetRef.current + (deltaSeconds * pixelsPerSecond)) % segmentWidth;
-        const pending = pendingEquationsRef.current;
-        const seamDistance = Math.min(offsetRef.current, Math.abs(segmentWidth - offsetRef.current));
-        if (pending && seamDistance < 6) {
-          pendingEquationsRef.current = null;
-          displayedSignatureRef.current = pending.signature;
-          offsetRef.current = 0;
-          setDisplayedEquations(pending.equations);
-        }
-        track.style.transform = `translate3d(${-offsetRef.current}px, 0, 0)`;
-      }
-      animationRef.current = window.requestAnimationFrame(tick);
-    };
-
-    animationRef.current = window.requestAnimationFrame(tick);
-    return () => {
-      cancelled = true;
-      if (animationRef.current) {
-        window.cancelAnimationFrame(animationRef.current);
-      }
-    };
-  }, [run?.id, pixelsPerSecond, isActive]);
-
-  return (
-    <div className="math-ticker-wrap" aria-hidden="true" ref={wrapRef}>
-      <svg className="ticker-staff" viewBox="0 0 100 72" preserveAspectRatio="none">
-        <line x1="0" y1="1" x2="100" y2="1" />
-        <line x1="0" y1="18" x2="100" y2="18" />
-        <line x1="0" y1="36" x2="100" y2="36" />
-        <line x1="0" y1="54" x2="100" y2="54" />
-        <line x1="0" y1="71" x2="100" y2="71" />
-      </svg>
-      <div className="math-ticker-track" ref={trackRef}>
-        {Array.from({ length: segmentCopies }).map((_, copyIndex) => (
-          <div
-            key={`segment-${copyIndex}`}
-            className="math-ticker-segment"
-            ref={copyIndex === 0 ? segmentRef : undefined}
-          >
-            {displayedEquations.map((eq) =>
-              eq.idle ? (
-                <span key={`${copyIndex}-${eq.key}`} className="ticker-eq">
-                  <span className="ticker-formula">
-                    {eq.alt ? <>T(n) = 3n + 1, &nbsp; n {"\u2261"} 1 (mod 2)</> : <>T(n) = n / 2, &nbsp; n {"\u2261"} 0 (mod 2)</>}
-                  </span>
-                </span>
-              ) : eq.terminal ? (
-                <span key={`${copyIndex}-${eq.key}`} className="ticker-eq">
-                  <span className="ticker-formula">a<sub>{eq.step}</sub> {"\u2192"} 1 {"\u220e"}</span>
-                  <span className="ticker-values">orbit converged</span>
-                </span>
-              ) : (
-                <span key={`${copyIndex}-${eq.key}`} className="ticker-eq">
-                  <span className="ticker-formula">
-                    T(a<sub>{eq.step}</sub>) = {eq.isEven ? <>a<sub>{eq.step}</sub> / 2</> : <>3{"\u00b7"}a<sub>{eq.step}</sub> + 1</>}
-                  </span>
-                  <span className="ticker-values">
-                    <MathNum value={eq.value} /> <span className="ticker-arrow">{"\u2192"}</span> <MathNum value={eq.nextValue} />
-                  </span>
-                </span>
-              )
-            )}
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-function LiveMathNavigator({ runs, selectedRun, onSelectRun, onJumpToSection }) {
-  const selectedRunIsLive = selectedRun?.status === "running";
-
-  return (
-    <div className="live-nav-bar">
-      <div className="live-nav-left">
-        <span className="orbit-kicker">Pinned</span>
-        <strong>{selectedRun?.id ?? "none"}</strong>
-        {selectedRun ? <span className="live-nav-detail">{selectedRun.kernel} | {selectedRun.hardware}</span> : null}
-        {selectedRun ? (
-          <span className={selectedRunIsLive ? "live-mode-badge live-mode-badge-live" : "live-mode-badge live-mode-badge-replay"}>
-            {selectedRunIsLive ? "LIVE NOW" : "HISTORICAL REPLAY"}
-          </span>
-        ) : null}
-      </div>
-      <div className="live-nav-center">
-        {liveMathSections.map((section) => (
-          <button key={section.id} type="button" className="live-nav-button" onClick={() => onJumpToSection(section.id)}>
-            {section.label}
-          </button>
-        ))}
-      </div>
-      <div className="live-nav-right">
-        {runs.slice(0, 5).map((run) => (
-          <button
-            key={run.id}
-            type="button"
-            className={run.id === selectedRun?.id ? "live-nav-chip active" : "live-nav-chip"}
-            onClick={() => onSelectRun(run.id)}
-          >
-            {run.id} {run.status === "running" ? "LIVE" : ""}
-          </button>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-function Legend() {
-  const items = [
-    ["active", "worth watching, but not proven strong yet"],
-    ["promising", "has repeated support or real search-space reduction"],
-    ["validated", "replayed successfully with independent logic"],
-    ["refuted", "contradicted by evidence or failed reproduction"],
-    ["frozen", "paused, retained for history, not deleted"]
-  ];
-
-  return (
-    <div className="legend-grid">
-      {items.map(([status, text]) => (
-        <article key={status} className="legend-card">
-          <StatusPill value={status} />
-          <p>{text}</p>
-        </article>
-      ))}
-    </div>
-  );
-}
-
-function EmptyState({ title, text }) {
-  return (
-    <article className="empty-state">
-      <h3>{title}</h3>
-      <p>{text}</p>
-    </article>
-  );
-}
-
-function ShowMoreButton({ total, visible, onClick, label }) {
-  if (total <= visible) {
-    return null;
-  }
-  return (
-    <button className="secondary-button" type="button" onClick={onClick}>
-      Show more {label} ({total - visible} hidden)
-    </button>
-  );
-}
-
-function FilterField({ label, children }) {
-  return (
-    <label className="filter-field">
-      <span>{label}</span>
-      {children}
-    </label>
-  );
-}
-
-function FilterBar({ onClear, clearLabel = "Clear filters", children }) {
-  return (
-    <div className="filter-bar">
-      {children}
-      <button className="secondary-button" type="button" onClick={onClear}>
-        {clearLabel}
-      </button>
-    </div>
-  );
-}
-
-function SectionSubnav({ items, activeId, onChange, label = "Section views" }) {
-  return (
-    <div className="section-subnav" role="tablist" aria-label={label}>
-      {items.map((item) => (
-        <button
-          key={item.id}
-          type="button"
-          role="tab"
-          aria-selected={activeId === item.id}
-          className={activeId === item.id ? "section-subnav-button active" : "section-subnav-button"}
-          onClick={() => onChange(item.id)}
-        >
-          <span className="section-subnav-top">
-            <span className="section-subnav-label">{item.label}</span>
-            {item.count != null ? <span className="section-subnav-count">{item.count}</span> : null}
-          </span>
-          {item.note ? <span className="section-subnav-note">{item.note}</span> : null}
-        </button>
-      ))}
-    </div>
-  );
-}
-
-function CapabilityCard({ label, value, note }) {
-  return (
-    <article className="capability-card">
-      <span>{label}</span>
-      <strong>{value}</strong>
-      <p>{note}</p>
-    </article>
-  );
-}
 
 function compactSourceLabel(url) {
   if (!url) {
@@ -1036,8 +107,11 @@ function EvidenceDetailPanel({
     runs: 8,
     claims: 8,
     artifacts: 8,
-    claimUpdates: 6
+    claimUpdates: 6,
+    dependencies: 8,
+    coverage: 8
   });
+  const [expandedGroupRuns, setExpandedGroupRuns] = useState({});
   const [showRawClaimNotes, setShowRawClaimNotes] = useState(false);
   const isAutopilotArtifact = Boolean(selectedArtifact?.metadata?.llm_autopilot);
   const typeLabel = selectedRun
@@ -1091,7 +165,12 @@ function EvidenceDetailPanel({
   const visibleRelatedClaims = relatedClaims.slice(0, detailVisible.claims);
   const visibleRelatedArtifacts = relatedArtifacts.slice(0, detailVisible.artifacts);
   const visibleClaimUpdates = parsedClaimNotes?.history?.slice(0, detailVisible.claimUpdates) || [];
-  const dependencyPreview = selectedClaim?.dependencies?.slice(0, 8) || [];
+  const dependencyPreview = selectedClaim?.dependencies?.slice(0, detailVisible.dependencies) || [];
+  const claimCoverageIds =
+    selectedClaim && relatedRuns.length > 0
+      ? relatedRuns.slice(0, detailVisible.coverage).map((run) => run.id)
+      : parsedClaimNotes?.snapshot?.runCoveragePreview?.slice(0, detailVisible.coverage) || [];
+  const hiddenClaimCoverageCount = Math.max(0, relatedRuns.length - claimCoverageIds.length);
 
   useEffect(() => {
     setDetailVisible({
@@ -1099,7 +178,9 @@ function EvidenceDetailPanel({
       runs: 8,
       claims: 8,
       artifacts: 8,
-      claimUpdates: 6
+      claimUpdates: 6,
+      dependencies: 8,
+      coverage: 8
     });
     setShowRawClaimNotes(false);
   }, [item?.id]);
@@ -1260,7 +341,13 @@ function EvidenceDetailPanel({
                   </button>
                 ))}
                 {selectedClaim.dependencies.length > dependencyPreview.length ? (
-                  <span className="relation-chip relation-chip-muted">+{selectedClaim.dependencies.length - dependencyPreview.length} more</span>
+                  <button
+                    className="relation-chip relation-chip-more"
+                    type="button"
+                    onClick={() => setDetailVisible((current) => ({ ...current, dependencies: current.dependencies + 8 }))}
+                  >
+                    +{selectedClaim.dependencies.length - dependencyPreview.length} more
+                  </button>
                 ) : null}
               </div>
             ) : (
@@ -1286,15 +373,24 @@ function EvidenceDetailPanel({
               </article>
             </div>
           ) : null}
-          {parsedClaimNotes?.snapshot?.runCoveragePreview?.length ? (
+          {claimCoverageIds.length ? (
             <div className="detail-related-card">
               <span className="metric-label">Run coverage preview</span>
               <div className="relation-chip-list claim-chip-list">
-                {parsedClaimNotes.snapshot.runCoveragePreview.map((runId) => (
+                {claimCoverageIds.map((runId) => (
                   <button key={runId} className="relation-chip" type="button" onClick={() => onSelectEvidence("run", runId)}>
                     {runId}
                   </button>
                 ))}
+                {hiddenClaimCoverageCount > 0 ? (
+                  <button
+                    className="relation-chip relation-chip-more"
+                    type="button"
+                    onClick={() => setDetailVisible((current) => ({ ...current, coverage: current.coverage + 8 }))}
+                  >
+                    +{hiddenClaimCoverageCount} more
+                  </button>
+                ) : null}
               </div>
             </div>
           ) : null}
@@ -1409,7 +505,7 @@ function EvidenceDetailPanel({
                   <strong>{group.run_ids.length} runs</strong>
                 </div>
                 <div className="relation-chip-list">
-                  {group.run_ids.slice(0, 6).map((runId) => (
+                  {group.run_ids.slice(0, expandedGroupRuns[group.claim_id] || 6).map((runId) => (
                     <button
                       key={runId}
                       className="relation-chip"
@@ -1419,8 +515,14 @@ function EvidenceDetailPanel({
                       {runId}
                     </button>
                   ))}
-                  {group.run_ids.length > 6 ? (
-                    <span className="relation-chip relation-chip-muted">+{group.run_ids.length - 6} more</span>
+                  {group.run_ids.length > (expandedGroupRuns[group.claim_id] || 6) ? (
+                    <button
+                      className="relation-chip relation-chip-more"
+                      type="button"
+                      onClick={() => setExpandedGroupRuns((prev) => ({ ...prev, [group.claim_id]: (prev[group.claim_id] || 6) + 18 }))}
+                    >
+                      +{group.run_ids.length - (expandedGroupRuns[group.claim_id] || 6)} more
+                    </button>
                   ) : null}
                 </div>
                 <button
@@ -1567,276 +669,6 @@ function ActionField({ label, wide = false, children }) {
   );
 }
 
-function firstPositiveInteger(...values) {
-  for (const value of values) {
-    const parsed = Number(value);
-    if (Number.isFinite(parsed) && parsed >= 1) {
-      return Math.floor(parsed);
-    }
-  }
-  return 1;
-}
-
-function buildOrbit(seed, maxSteps = 18) {
-  let current = typeof seed === "bigint" ? seed : BigInt(seed || 1);
-  const frames = [];
-
-  for (let step = 0; step < maxSteps; step += 1) {
-    frames.push({
-      step,
-      value: current.toString()
-    });
-    if (current === 1n) {
-      break;
-    }
-    current = current % 2n === 0n ? current / 2n : (3n * current) + 1n;
-  }
-
-  return frames;
-}
-
-function twoAdicValuation(value) {
-  let current = BigInt(value || 0);
-  let power = 0;
-  while (current > 0n && current % 2n === 0n) {
-    current /= 2n;
-    power += 1;
-  }
-  return power;
-}
-
-function nextCollatzValue(value) {
-  const current = BigInt(value || 1);
-  if (current % 2n === 0n) {
-    return {
-      parity: "even",
-      expression: `a_(k+1) = a_k / 2 = ${current} / 2 = ${current / 2n}`,
-      next: (current / 2n).toString(),
-      rule: `${current} = 0 (mod 2)`,
-      acceleration: ""
-    };
-  }
-  const next = (3n * current) + 1n;
-  const valuation = twoAdicValuation(next);
-  const compressed = next / (2n ** BigInt(valuation));
-  return {
-    parity: "odd",
-    expression: `a_(k+1) = 3a_k + 1 = 3 * ${current} + 1 = ${next}`,
-    next: next.toString(),
-    rule: `${current} = 1 (mod 2)`,
-    acceleration: `${next} = 2^${valuation} * ${compressed}`
-  };
-}
-
-function orbitStats(orbit) {
-  if (orbit.length === 0) {
-    return { evenSteps: 0, oddSteps: 0, maxValue: "1" };
-  }
-  let evenSteps = 0;
-  let oddSteps = 0;
-  let maxValue = 0n;
-  for (const item of orbit) {
-    const value = BigInt(item.value);
-    if (value % 2n === 0n) {
-      evenSteps += 1;
-    } else {
-      oddSteps += 1;
-    }
-    if (value > maxValue) {
-      maxValue = value;
-    }
-  }
-  return {
-    evenSteps,
-    oddSteps,
-    maxValue: maxValue.toString()
-  };
-}
-
-function buildMathTrace(orbit, startIndex, kernel, limit = 5) {
-  if (orbit.length === 0) {
-    return [];
-  }
-  const rows = [];
-  const firstIndex = Math.max(0, Math.min(startIndex, Math.max(0, orbit.length - 1)));
-
-  for (let offset = 0; offset < limit; offset += 1) {
-    const index = firstIndex + offset;
-    if (index >= orbit.length) {
-      break;
-    }
-
-    const current = BigInt(orbit[index].value);
-    if (current === 1n) {
-      rows.push({
-        key: `${index}-terminal`,
-        step: index,
-        formula: `a_${index} = 1`,
-        note: "The trace has entered the trivial loop 1 -> 4 -> 2 -> 1.",
-        acceleration: ""
-      });
-      break;
-    }
-
-    if (current % 2n === 0n) {
-      const next = current / 2n;
-      rows.push({
-        key: `${index}-even`,
-        step: index,
-        formula: `a_${index + 1} = a_${index} / 2 = ${current} / 2 = ${next}`,
-        note: `${current} = 0 (mod 2), so the map contracts immediately.`,
-        acceleration: ""
-      });
-      continue;
-    }
-
-    const lifted = (3n * current) + 1n;
-    const valuation = twoAdicValuation(lifted);
-    const compressed = lifted / (2n ** BigInt(valuation));
-    rows.push({
-      key: `${index}-odd`,
-      step: index,
-      formula: `a_${index + 1} = 3a_${index} + 1 = 3 * ${current} + 1 = ${lifted}`,
-      note: `${current} = 1 (mod 2), so the direct trace takes the odd branch.`,
-      acceleration:
-        kernel === "cpu-accelerated"
-          ? `${lifted} = 2^${valuation} * ${compressed}, so the accelerated odd kernel compresses to ${compressed}.`
-          : `${lifted} = 2^${valuation} * ${compressed}.`
-    });
-  }
-
-  return rows;
-}
-
-function summarizeMetric(metric) {
-  if (metric === "max_total_stopping_time") {
-    return {
-      symbol: "sigma",
-      label: "total stopping time",
-      definition: "steps required to reach 1"
-    };
-  }
-  if (metric === "max_stopping_time") {
-    return {
-      symbol: "tau",
-      label: "descent time",
-      definition: "first time the orbit falls below its seed"
-    };
-  }
-  return {
-    symbol: "E",
-    label: "peak excursion",
-    definition: "largest value reached on the orbit"
-  };
-}
-
-function buildMetricSummary(run) {
-  if (!run?.metrics) {
-    return [];
-  }
-  return ["max_total_stopping_time", "max_stopping_time", "max_excursion"]
-    .map((metric) => {
-      const record = run.metrics?.[metric];
-      if (!record || Number(record.n) < 1) {
-        return null;
-      }
-      const details = summarizeMetric(metric);
-      return {
-        key: metric,
-        label: details.label,
-        formula: `${details.symbol}(${record.n}) = ${record.value}`,
-        definition: details.definition
-      };
-    })
-    .filter(Boolean);
-}
-
-function buildRecordTape(run) {
-  const records = Array.isArray(run?.metrics?.sample_records) ? run.metrics.sample_records : [];
-  return [...records]
-    .reverse()
-    .slice(0, 6)
-    .map((record, index) => {
-      const details = summarizeMetric(record.metric);
-      return {
-        key: `${record.metric}-${record.n}-${record.value}-${index}`,
-        label: details.label,
-        formula: `${details.symbol}(${record.n}) = ${record.value}`,
-        definition: details.definition
-      };
-    });
-}
-
-function runProgress(run) {
-  if (!run) {
-    return { processed: 0, total: 0, percent: 0 };
-  }
-  const total = Math.max(0, Number(run.range_end) - Number(run.range_start) + 1);
-  const processed = Math.max(0, Number(run.metrics?.processed || run.checkpoint?.last_processed || 0));
-  const percent = total > 0 ? Math.min(100, (processed / total) * 100) : 0;
-  return { processed, total, percent };
-}
-
-function describeCapability(capability) {
-  if (!capability) {
-    return "No capability record exposed yet.";
-  }
-  const executionReady = capability.metadata?.execution_ready;
-  if (capability.kind === "gpu") {
-    return executionReady
-      ? `GPU path is executable with kernels: ${(capability.supported_kernels || []).join(", ")}.`
-      : "GPU is detected but has no executable kernel yet, so the dashboard cannot dispatch real runs to it.";
-  }
-  return executionReady
-    ? `CPU worker can execute: ${(capability.supported_kernels || []).join(", ")}.`
-    : "CPU capability is visible but not executable yet.";
-}
-
-function orbitSeedFromRun(run) {
-  return firstPositiveInteger(
-    run?.checkpoint?.last_processed,
-    run?.checkpoint?.next_value,
-    run?.metrics?.max_total_stopping_time?.n,
-    run?.metrics?.max_excursion?.n,
-    run?.range_start
-  );
-}
-
-function orbitSeedLabel(run) {
-  if (!run) {
-    return "no run selected";
-  }
-  if (run.status === "running" && Number(run.checkpoint?.last_processed) >= 1) {
-    return `live checkpoint ${run.checkpoint.last_processed}`;
-  }
-  if (Number(run.metrics?.max_total_stopping_time?.n) >= 1) {
-    return `record seed ${run.metrics.max_total_stopping_time.n}`;
-  }
-  return `seed ${run.range_start}`;
-}
-
-function describeOrbitSeed(run, orbitSeed) {
-  const seed = BigInt(orbitSeed || 1);
-  const valuation = twoAdicValuation(seed);
-  const sourceLabel = run?.status === "running" && Number(run?.checkpoint?.last_processed) >= 1
-    ? `checkpoint input n = ${run.checkpoint.last_processed}`
-    : Number(run?.checkpoint?.last_processed) >= 1
-      ? `saved checkpoint seed n = ${run.checkpoint.last_processed}`
-      : Number(run?.metrics?.max_total_stopping_time?.n) >= 1
-        ? `record seed n = ${run.metrics.max_total_stopping_time.n}`
-        : `range seed n = ${run?.range_start ?? orbitSeed}`;
-  const reconstructionNote = run?.status === "running"
-    ? "The UI recomputes the next visible Collatz iterates from the latest real checkpoint input. This is exact for that seed, but it is not yet a direct inner-kernel trace dump."
-    : "The UI is replaying the next visible Collatz iterates from a saved real seed. The formulas are exact for that seed, but they are reconstructed from stored run data.";
-  const parityNote = valuation > 0
-    ? `This seed is divisible by 2^${valuation}, so the first ${valuation} visible step${valuation === 1 ? "" : "s"} are immediate halvings. Similar leading blocks are expected when checkpoints land on nearby even inputs.`
-    : "This seed is odd, so the next visible step should be a 3n + 1 expansion before any halving compression appears.";
-  return {
-    sourceLabel,
-    detail: `${reconstructionNote} ${parityNote}`
-  };
-}
-
 function OrbitPanel({ run, worker, frameIndex, onSelectRun, runs, expanded = false, showSelector = true, sectionId }) {
   const orbitSeed = run ? orbitSeedFromRun(run) : 1;
   const orbit = run ? buildOrbit(orbitSeed, 16) : [];
@@ -1892,13 +724,16 @@ function OrbitPanel({ run, worker, frameIndex, onSelectRun, runs, expanded = fal
               <span>{run.kernel}</span>
               <span>{run.hardware}</span>
               <span>{run.status}</span>
+              <span className="ts-micro">{formatCompactTimestamp(run.finished_at || run.started_at || run.created_at)}</span>
             </div>
           </div>
           <div className="math-operator-banner">
             <span className="orbit-kicker">Collatz operator</span>
-            <div className="math-expression">
-              T(n) = n / 2 when n ≡ 0 (mod 2), &nbsp;&nbsp; T(n) = 3n + 1 when n ≡ 1 (mod 2)
-            </div>
+            <KatexExpr
+              display={true}
+              latex="T(n) = \begin{cases} \dfrac{n}{2} & \text{if } n \equiv 0 \pmod{2} \\[6pt] 3n + 1 & \text{if } n \equiv 1 \pmod{2} \end{cases}"
+              className="math-expression"
+            />
           </div>
           <div className="live-ledger">
             <article className="ledger-card">
@@ -1909,7 +744,9 @@ function OrbitPanel({ run, worker, frameIndex, onSelectRun, runs, expanded = fal
             <article className="ledger-card">
               <span className="orbit-kicker">Next direct image</span>
               <strong>{stepDetails?.next ?? orbitSeed}</strong>
-              <p>{stepDetails?.expression ?? "No direct step available."}</p>
+              {stepDetails?.latex
+                ? <KatexExpr latex={stepDetails.latex} display={false} className="ledger-katex" />
+                : <p>{stepDetails?.expression ?? "No direct step available."}</p>}
             </article>
             <article className="ledger-card">
               <span className="orbit-kicker">Worker checkpoint</span>
@@ -1985,9 +822,11 @@ function OrbitPanel({ run, worker, frameIndex, onSelectRun, runs, expanded = fal
                       <span>step {row.step}</span>
                       {row.step === safeFrameIndex ? <strong>live</strong> : null}
                     </div>
-                    <div className="math-expression">{row.formula}</div>
+                    {row.latex
+                      ? <KatexExpr latex={row.latex} display={true} className="math-expression" />
+                      : <div className="math-expression">{row.formula}</div>}
                     <p>{row.note}</p>
-                    {row.acceleration ? <p className="math-annotation">{row.acceleration}</p> : null}
+                    {row.acceleration ? <KatexExpr latex={row.acceleration} display={true} className="math-annotation" /> : null}
                   </article>
                 ))}
               </div>
@@ -1997,7 +836,9 @@ function OrbitPanel({ run, worker, frameIndex, onSelectRun, runs, expanded = fal
             {metricSummary.map((record) => (
               <article key={record.key} className="record-formula-card">
                 <span className="orbit-kicker">{record.label}</span>
-                <div className="math-expression">{record.formula}</div>
+                {record.latex
+                  ? <KatexExpr latex={record.latex} display={true} className="math-expression" />
+                  : <div className="math-expression">{record.formula}</div>}
                 <p>{record.definition}</p>
               </article>
             ))}
@@ -2013,7 +854,9 @@ function OrbitPanel({ run, worker, frameIndex, onSelectRun, runs, expanded = fal
               <div className="record-list">
                 {recordTape.map((record) => (
                   <article key={record.key} className="record-row">
-                    <div className="math-expression">{record.formula}</div>
+                    {record.latex
+                      ? <KatexExpr latex={record.latex} display={true} className="math-expression" />
+                      : <div className="math-expression">{record.formula}</div>}
                     <p>{record.label}: {record.definition}.</p>
                   </article>
                 ))}
@@ -2048,208 +891,49 @@ function OrbitPanel({ run, worker, frameIndex, onSelectRun, runs, expanded = fal
   );
 }
 
-function RunRail({ runs, selectedRunId, onSelectRun }) {
-  return (
-    <aside className="panel run-rail">
-      <div className="run-rail-header">
-        <span className="orbit-kicker">Run navigator</span>
-        <span className="run-rail-count">{runs.length}</span>
-      </div>
-      {runs.length === 0 ? (
-        <p className="orbit-note">No runs yet. Queue one first.</p>
-      ) : (
-        <div className="run-rail-list">
-          {runs.slice(0, 10).map((run) => {
-            const progress = runProgress(run);
-            const selected = run.id === selectedRunId;
-            const purpose = describeRunPurpose(run);
-            const statusDetail = describeRunStatusDetail(run);
-            const magnitude = runRangeMagnitude(run);
-            return (
-              <button
-                key={run.id}
-                type="button"
-                className={selected ? "run-rail-card active" : "run-rail-card"}
-                onClick={() => onSelectRun(run.id)}
-              >
-                <div className="run-rail-head">
-                  <strong>{run.id}</strong>
-                  <StatusPill value={run.status} />
-                </div>
-                <span className="run-rail-name">{run.name}</span>
-                <span className="run-rail-meta">{run.kernel} | {run.hardware}</span>
-                <span className="run-rail-purpose">{purpose}</span>
-                {statusDetail ? (
-                  <span className={`run-rail-detail ${run.status === "failed" ? "failure" : ""}`}>{statusDetail}</span>
-                ) : null}
-                {magnitude ? <span className="run-rail-range power">{magnitude}</span> : null}
-                <span className="run-rail-range">
-                  {run.range_start.toLocaleString()} → {run.range_end.toLocaleString()}
-                </span>
-                <div className="run-rail-progress">
-                  <div className="run-rail-bar">
-                    <div className="run-rail-fill" style={{ width: `${progress.percent}%` }} />
-                  </div>
-                  <span className="run-rail-pct">{progress.percent.toFixed(0)}%</span>
-                </div>
-              </button>
-            );
-          })}
-        </div>
-      )}
-    </aside>
-  );
-}
-
-function RedditIntelRail({ feed, onImportPost, pendingKey }) {
-  const posts = Array.isArray(feed?.posts) ? feed.posts : [];
-  const fetchedAt = feed?.fetched_at ? formatTimestamp(feed.fetched_at) : "not fetched yet";
-
-  return (
-    <aside className="workspace-rail workspace-rail-right">
-      <article className="panel reddit-rail-card">
-        <div className="card-head">
-          <div>
-            <p className="eyebrow">External watch</p>
-            <h3>r/Collatz feed</h3>
-          </div>
-          <a
-            className="secondary-button detail-download-link"
-            href="https://www.reddit.com/r/Collatz/"
-            target="_blank"
-            rel="noreferrer"
-          >
-            Open Reddit
-          </a>
-        </div>
-        <p className="reddit-rail-note">
-          This is intake only. New posts can suggest sources to review, but nothing here is trusted automatically.
-        </p>
-        <div className="reddit-rail-stats">
-          <article className="sidebar-runtime-card">
-            <span>Fetched</span>
-            <strong>{fetchedAt}</strong>
-          </article>
-          <article className="sidebar-runtime-card">
-            <span>Review candidates</span>
-            <strong>{feed?.review_candidate_count ?? 0}</strong>
-          </article>
-        </div>
-        {posts.length === 0 ? (
-          <EmptyState
-            title="No subreddit feed yet"
-            text="The backend has not returned the latest r/Collatz posts yet."
-          />
-        ) : (
-          <div className="reddit-feed-list">
-            {posts.map((post) => (
-              <article key={post.id} className="reddit-post-card">
-                <div className="card-head">
-                  <span className={`reddit-signal-pill reddit-signal-${post.signal}`}>{prettyLabel(post.signal)}</span>
-                  <span className="meta-line">{formatRelativeTime(post.created_at)}</span>
-                </div>
-                <strong>{post.title}</strong>
-                <p className="reddit-post-excerpt">{post.excerpt}</p>
-                <div className="reddit-post-meta">
-                  <span>u/{post.author}</span>
-                  <span>{post.score} score</span>
-                  <span>{post.num_comments} comments</span>
-                </div>
-                <div className="card-action-row">
-                  <a href={post.permalink} target="_blank" rel="noreferrer" className="secondary-button reddit-open-link">
-                    Open thread
-                  </a>
-                  <button
-                    type="button"
-                    className="secondary-button reddit-open-link"
-                    onClick={() => onImportPost(post)}
-                    disabled={pendingKey === `reddit-${post.id}`}
-                  >
-                    {pendingKey === `reddit-${post.id}` ? "Importing..." : "Intake source"}
-                  </button>
-                </div>
-              </article>
-            ))}
-          </div>
-        )}
-      </article>
-    </aside>
-  );
-}
-
-function ComputeBudgetRail({
-  computeProfile,
-  quickForms,
-  updateQuickForm,
-  handleSubmit,
-  actionState,
-  effectiveCpuBudget,
-  effectiveGpuBudget
-}) {
-  return (
-    <aside className="workspace-rail workspace-rail-left">
-      <form className="compute-control-panel compute-control-panel-docked" onSubmit={handleSubmit}>
-        <div className="compute-control-header">
-          <span className="sidebar-kicker">Compute budget</span>
-          <strong>{computeProfile.system_percent}% system</strong>
-        </div>
-        <label className="compute-slider-row">
-          <span>Whole system</span>
-          <strong>{quickForms.computeSystemPercent}%</strong>
-          <input
-            type="range"
-            min="0"
-            max="100"
-            step="5"
-            value={quickForms.computeSystemPercent}
-            onChange={(event) => updateQuickForm("computeSystemPercent", event.target.value)}
-          />
-        </label>
-        <label className="compute-slider-row">
-          <span>CPU lane</span>
-          <strong>{quickForms.computeCpuPercent}%</strong>
-          <input
-            type="range"
-            min="0"
-            max="100"
-            step="5"
-            value={quickForms.computeCpuPercent}
-            onChange={(event) => updateQuickForm("computeCpuPercent", event.target.value)}
-          />
-        </label>
-        <label className="compute-slider-row">
-          <span>GPU lane</span>
-          <strong>{quickForms.computeGpuPercent}%</strong>
-          <input
-            type="range"
-            min="0"
-            max="100"
-            step="5"
-            value={quickForms.computeGpuPercent}
-            onChange={(event) => updateQuickForm("computeGpuPercent", event.target.value)}
-          />
-        </label>
-        <p className="sidebar-note compute-budget-note">
-          Effective now: CPU {effectiveCpuBudget}% • GPU {effectiveGpuBudget}%.
-        </p>
-        <button className="secondary-button" type="submit" disabled={actionState.pendingKey === "compute profile"}>
-          {actionState.pendingKey === "compute profile" ? "Saving..." : "Apply budget"}
-        </button>
-      </form>
-    </aside>
-  );
-}
-
 export default function App() {
-  const [activeTab, setActiveTab] = useState("overview");
+  const [theme, setTheme] = useState(() => {
+    const stored = localStorage.getItem("collatz-theme");
+    return stored === "dark" ? "dark" : "light";
+  });
+  const cycleTheme = () => {
+    const next = theme === "light" ? "dark" : "light";
+    setTheme(next);
+    localStorage.setItem("collatz-theme", next);
+    document.documentElement.setAttribute("data-theme", next);
+  };
+  useEffect(() => {
+    document.documentElement.setAttribute("data-theme", theme);
+    const relIcon = document.querySelector('link[rel="icon"]');
+    const relApple = document.querySelector('link[rel="apple-touch-icon"]');
+    if (relIcon) {
+      relIcon.setAttribute(
+        "href",
+        theme === "dark" ? "/favicon-dark.svg" : "/favicon.svg"
+      );
+    }
+    if (relApple) {
+      relApple.setAttribute(
+        "href",
+        theme === "dark" ? "/icon-dark.svg" : "/icon.svg"
+      );
+    }
+  }, [theme]);
+
+  const [activeTab, setActiveTab] = useState(() => {
+    const hash = window.location.hash.slice(1);
+    return tabs.some(t => t.id === hash) ? hash : "overview";
+  });
   const [evidenceView, setEvidenceView] = useState("overview");
   const [operationsView, setOperationsView] = useState("compute");
   const [tracksView, setTracksView] = useState("overview");
   const [guideView, setGuideView] = useState("start");
   const [refreshNonce, setRefreshNonce] = useState(0);
+  const computeSlidersDirty = useRef(false);
   const [selectedEvidence, setSelectedEvidence] = useState({ kind: "", id: "" });
   const [artifactPreviews, setArtifactPreviews] = useState({});
   const [previewArtifactId, setPreviewArtifactId] = useState("");
+  const [logsOpen, setLogsOpen] = useState(false);
   const [visible, setVisible] = useState({
     directions: 10,
     ledger: 8,
@@ -2265,12 +949,20 @@ export default function App() {
     runQuery: "",
     runStatus: "all",
     runHardware: "all",
+    runDirection: "all",
+    runCategory: "all",
     taskQuery: "",
     taskStatus: "all",
     claimQuery: "",
+    claimStatus: "all",
+    claimDirection: "all",
+    claimFamily: "all",
     sourceQuery: "",
     sourceStatus: "all",
-    artifactQuery: ""
+    sourceType: "all",
+    artifactQuery: "",
+    artifactKind: "all",
+    artifactDirection: "all"
   });
   const [quickForms, setQuickForms] = useState({
     runDirection: "verification",
@@ -2349,12 +1041,13 @@ export default function App() {
 
     async function load() {
       try {
-        const [summary, directions, tasks, runs, claims, claimRunLinks, sources, artifacts, baseline, computeProfile, llmStatus, autopilotStatus, redditFeed, fallacyTags, hardware, workers] = await Promise.all([
+        const [summary, directions, tasks, runs, claims, hypotheses, claimRunLinks, sources, artifacts, baseline, computeProfile, llmStatus, autopilotStatus, redditFeed, fallacyTags, hardware, workers] = await Promise.all([
           readJson(endpoints.summary),
           readJson(endpoints.directions),
           readJson(endpoints.tasks),
           readJson(endpoints.runs),
           readJson(endpoints.claims),
+          readOptionalJson(endpoints.hypotheses),
           readOptionalJson(endpoints.claimRunLinks),
           readJson(endpoints.sources),
           readJson(endpoints.artifacts),
@@ -2370,27 +1063,46 @@ export default function App() {
         if (!active) {
           return;
         }
+        const next = {
+          summary,
+          directions,
+          tasks,
+          runs,
+          claims,
+          hypotheses: asList(hypotheses),
+          claimRunLinks: asList(claimRunLinks, ["items", "links"]),
+          sources,
+          artifacts,
+          baseline,
+          computeProfile,
+          llmStatus,
+          autopilotStatus,
+          redditFeed,
+          fallacyTags: asList(fallacyTags, ["items", "tags", "catalog"]),
+          hardware: asList(hardware, ["items", "hardware", "inventory"]),
+          workers: asList(workers, ["items", "workers", "registry"]),
+          error: "",
+          loading: false,
+          lastUpdated: new Date().toLocaleTimeString()
+        };
         startTransition(() => {
-          setState({
-            summary,
-            directions,
-            tasks,
-            runs,
-            claims,
-            claimRunLinks: asList(claimRunLinks, ["items", "links"]),
-            sources,
-            artifacts,
-            baseline,
-            computeProfile,
-            llmStatus,
-            autopilotStatus,
-            redditFeed,
-            fallacyTags: asList(fallacyTags, ["items", "tags", "catalog"]),
-            hardware: asList(hardware, ["items", "hardware", "inventory"]),
-            workers: asList(workers, ["items", "workers", "registry"]),
-            error: "",
-            loading: false,
-            lastUpdated: new Date().toLocaleTimeString()
+          setState((prev) => {
+            // Skip update if core data arrays haven't changed (same lengths + same first IDs)
+            const same = (a, b) => Array.isArray(a) && Array.isArray(b) && a.length === b.length && a[0]?.id === b[0]?.id && a[a.length-1]?.id === b[b.length-1]?.id;
+            const coreUnchanged = same(prev.runs, next.runs) && same(prev.claims, next.claims)
+              && same(prev.tasks, next.tasks) && same(prev.sources, next.sources)
+              && same(prev.artifacts, next.artifacts) && same(prev.workers, next.workers);
+            if (coreUnchanged) {
+              // Still update metrics/checkpoint for running runs
+              const anyRunningChanged = next.runs.some((r, i) => {
+                const p = prev.runs[i];
+                return r.status !== p?.status || r.checkpoint_json !== p?.checkpoint_json
+                  || JSON.stringify(r.checkpoint) !== JSON.stringify(p?.checkpoint)
+                  || JSON.stringify(r.metrics) !== JSON.stringify(p?.metrics);
+              });
+              if (!anyRunningChanged) return prev; // no-op, skip re-render
+            }
+            return next;
           });
         });
       } catch (error) {
@@ -2452,18 +1164,24 @@ export default function App() {
     }
   }, []);
 
-  const runHardwareCounts = countBy(state.runs, (run) => run.hardware);
-  const runStatusCounts = countBy(state.runs, (run) => run.status);
+  const { runHardwareCounts, runStatusCounts, runningRunOptions, activeCpuRuns, activeGpuRuns, activeMixedRuns } = useMemo(() => {
+    const hwc = countBy(state.runs, (run) => run.hardware);
+    const sc = countBy(state.runs, (run) => run.status);
+    return {
+      runHardwareCounts: hwc,
+      runStatusCounts: sc,
+      runningRunOptions: state.runs.filter((run) => run.status === "running"),
+      activeCpuRuns: state.runs.filter((run) => run.status === "running" && run.hardware === "cpu").length,
+      activeGpuRuns: state.runs.filter((run) => run.status === "running" && run.hardware === "gpu").length,
+      activeMixedRuns: state.runs.filter((run) => run.status === "running" && run.hardware === "mixed").length,
+    };
+  }, [state.runs]);
   const cpuRuns = runHardwareCounts.cpu || 0;
   const gpuRuns = runHardwareCounts.gpu || 0;
   const mixedRuns = runHardwareCounts.mixed || 0;
   const queuedRuns = runStatusCounts.queued || 0;
   const runningRuns = runStatusCounts.running || 0;
   const validatedRunCount = runStatusCounts.validated || 0;
-  const runningRunOptions = state.runs.filter((run) => run.status === "running");
-  const activeCpuRuns = state.runs.filter((run) => run.status === "running" && run.hardware === "cpu").length;
-  const activeGpuRuns = state.runs.filter((run) => run.status === "running" && run.hardware === "gpu").length;
-  const activeMixedRuns = state.runs.filter((run) => run.status === "running" && run.hardware === "mixed").length;
   const hardwareInventory = state.hardware;
   const liveWorkers = state.workers.filter((worker) => {
     const status = normalize(worker.status || worker.state || worker.mode);
@@ -2472,12 +1190,59 @@ export default function App() {
   const computeProfile = state.computeProfile || { system_percent: 100, cpu_percent: 100, gpu_percent: 100 };
   const effectiveCpuBudget = Math.round(((computeProfile.system_percent ?? 100) * (computeProfile.cpu_percent ?? 100)) / 100);
   const effectiveGpuBudget = Math.round(((computeProfile.system_percent ?? 100) * (computeProfile.gpu_percent ?? 100)) / 100);
+  const allClaims = useMemo(() => Array.from(
+    new Map([...(state.claims || []), ...(state.hypotheses || [])].map((claim) => [claim.id, claim])).values()
+  ), [state.claims, state.hypotheses]);
+  const claimLookup = useMemo(() => new Map(allClaims.map((claim) => [claim.id, claim])), [allClaims]);
+  const runLookup = useMemo(() => new Map(state.runs.map((run) => [run.id, run])), [state.runs]);
+  const { artifactDirections, artifactDirectionById } = useMemo(() => {
+    const dirs = state.artifacts.reduce((accumulator, artifact) => {
+      let slug =
+        artifact.metadata?.direction ||
+        artifact.metadata?.direction_slug ||
+        artifact.metadata?.recommended_direction_slug ||
+        null;
+      if (!slug && artifact.claim_id) {
+        slug = claimLookup.get(artifact.claim_id)?.direction_slug || null;
+      }
+      if (!slug && artifact.run_id) {
+        slug = runLookup.get(artifact.run_id)?.direction_slug || null;
+      }
+      if (
+        !slug &&
+        (
+          (artifact.path || "").toLowerCase().includes("hypoth") ||
+          artifact.metadata?.category ||
+          artifact.metadata?.type === "hypothesis-evidence"
+        )
+      ) {
+        slug = "hypothesis-sandbox";
+      }
+      if (slug) {
+        accumulator[slug] = accumulator[slug] || [];
+        accumulator[slug].push(artifact);
+      }
+      return accumulator;
+    }, {});
+    const byId = Object.fromEntries(
+      Object.entries(dirs).flatMap(([slug, arts]) => arts.map((a) => [a.id, slug]))
+    );
+    return { artifactDirections: dirs, artifactDirectionById: byId };
+  }, [state.artifacts, claimLookup, runLookup]);
+  const runDirectionOptions = useMemo(() => ["all", ...state.directions.map((d) => d.slug)], [state.directions]);
+  const claimStatusFilterOptions = useMemo(() => ["all", ...Array.from(new Set(allClaims.map((c) => c.status).filter(Boolean))).sort()], [allClaims]);
+  const claimDirectionOptions = useMemo(() => ["all", ...Array.from(new Set(allClaims.map((c) => c.direction_slug).filter(Boolean))).sort()], [allClaims]);
+  const artifactDirectionOptions = useMemo(() => ["all", ...Array.from(new Set(Object.values(artifactDirectionById).filter(Boolean))).sort()], [artifactDirectionById]);
+  const artifactKindOptions = useMemo(() => ["all", ...Array.from(new Set(state.artifacts.map((a) => a.kind).filter(Boolean))).sort()], [state.artifacts]);
+  const sourceTypeFilterOptions = useMemo(() => ["all", ...Array.from(new Set(state.sources.map((s) => s.source_type).filter(Boolean))).sort()], [state.sources]);
   const visibleDirections = state.directions.slice(0, visible.directions);
-  const directionStats = Object.fromEntries(
+  const directionStats = useMemo(() => Object.fromEntries(
     state.directions.map((direction) => {
       const directionRuns = state.runs.filter((run) => run.direction_slug === direction.slug);
-      const claims = state.claims.filter((claim) => claim.direction_slug === direction.slug).length;
-      const openTasks = state.tasks.filter((task) => task.direction_slug === direction.slug && task.status !== "done");
+      const directionClaims = allClaims.filter((claim) => claim.direction_slug === direction.slug);
+      const directionTasks = state.tasks.filter((task) => task.direction_slug === direction.slug);
+      const directionArtifacts = artifactDirections[direction.slug] || [];
+      const openTasks = directionTasks.filter((task) => task.status !== "done");
       const computeTasks = openTasks.filter((task) => taskIntent(task) === "compute").length;
       const theoryTasks = openTasks.length - computeTasks;
       const activeRuns = directionRuns.filter((run) => run.status === "queued" || run.status === "running").length;
@@ -2486,25 +1251,37 @@ export default function App() {
         direction.slug,
         {
           runs: directionRuns.length,
-          claims,
-          tasks: openTasks.length,
+          claims: directionClaims.length,
+          tasks: directionTasks.length,
           computeTasks,
           theoryTasks,
           activeRuns,
-          validatedRuns
+          validatedRuns,
+          artifacts: directionArtifacts.length,
+          recentRuns: directionRuns.slice(0, 3),
+          recentClaims: directionClaims.slice(0, 3),
+          recentTasks: directionTasks.slice(0, 3),
+          recentArtifacts: directionArtifacts.slice(0, 3),
+          observedKernels: Array.from(new Set(directionRuns.map((run) => run.kernel))).slice(0, 4),
         }
       ];
     })
-  );
-  const filteredRuns = state.runs.filter((run) => {
+  ), [state.directions, state.runs, state.tasks, allClaims, artifactDirections]);
+  const filteredRuns = useMemo(() => state.runs.filter((run) => {
     const query = deferredFilters.runQuery;
     const matchesStatus =
       deferredFilters.runStatus === "all" || run.status === deferredFilters.runStatus;
     const matchesHardware =
       deferredFilters.runHardware === "all" || run.hardware === deferredFilters.runHardware;
+    const matchesDirection =
+      deferredFilters.runDirection === "all" || run.direction_slug === deferredFilters.runDirection;
+    const matchesCategory =
+      deferredFilters.runCategory === "all" || classifyRunCategory(run) === deferredFilters.runCategory;
     return (
       matchesStatus &&
       matchesHardware &&
+      matchesDirection &&
+      matchesCategory &&
       includesQuery(
         [
           run.id,
@@ -2520,8 +1297,14 @@ export default function App() {
         query
       )
     );
-  });
-  const filteredClaims = state.claims.filter((claim) =>
+  }), [state.runs, deferredFilters.runQuery, deferredFilters.runStatus, deferredFilters.runHardware, deferredFilters.runDirection, deferredFilters.runCategory]);
+  const filteredClaims = useMemo(() => allClaims.filter((claim) =>
+    (deferredFilters.claimStatus === "all" || claim.status === deferredFilters.claimStatus) &&
+    (deferredFilters.claimDirection === "all" || claim.direction_slug === deferredFilters.claimDirection) &&
+    (deferredFilters.claimFamily === "all" ||
+      (deferredFilters.claimFamily === "hypothesis"
+        ? claim.direction_slug === "hypothesis-sandbox"
+        : claim.direction_slug !== "hypothesis-sandbox")) &&
     includesQuery(
       [
         claim.id,
@@ -2534,12 +1317,15 @@ export default function App() {
       ],
       deferredFilters.claimQuery
     )
-  );
-  const filteredSources = state.sources.filter((source) => {
+  ), [allClaims, deferredFilters.claimStatus, deferredFilters.claimDirection, deferredFilters.claimFamily, deferredFilters.claimQuery]);
+  const filteredSources = useMemo(() => state.sources.filter((source) => {
     const matchesStatus =
       deferredFilters.sourceStatus === "all" || source.review_status === deferredFilters.sourceStatus;
+    const matchesType =
+      deferredFilters.sourceType === "all" || source.source_type === deferredFilters.sourceType;
     return (
       matchesStatus &&
+      matchesType &&
       includesQuery(
         [
           source.id,
@@ -2559,8 +1345,10 @@ export default function App() {
         deferredFilters.sourceQuery
       )
     );
-  });
-  const filteredArtifacts = state.artifacts.filter((artifact) =>
+  }), [state.sources, deferredFilters.sourceStatus, deferredFilters.sourceType, deferredFilters.sourceQuery]);
+  const filteredArtifacts = useMemo(() => state.artifacts.filter((artifact) =>
+    (deferredFilters.artifactKind === "all" || artifact.kind === deferredFilters.artifactKind) &&
+    (deferredFilters.artifactDirection === "all" || artifactDirectionById[artifact.id] === deferredFilters.artifactDirection) &&
     includesQuery(
       [
         artifact.id,
@@ -2568,12 +1356,13 @@ export default function App() {
         artifact.path,
         artifact.checksum,
         artifact.run_id,
-        artifact.claim_id
+        artifact.claim_id,
+        artifactDirectionById[artifact.id]
       ],
       deferredFilters.artifactQuery
     )
-  );
-  const filteredTasks = state.tasks.filter((task) => {
+  ), [state.artifacts, artifactDirectionById, deferredFilters.artifactKind, deferredFilters.artifactDirection, deferredFilters.artifactQuery]);
+  const filteredTasks = useMemo(() => state.tasks.filter((task) => {
     const query = deferredFilters.taskQuery;
     const matchesStatus =
       deferredFilters.taskStatus === "all" || task.status === deferredFilters.taskStatus;
@@ -2584,22 +1373,19 @@ export default function App() {
         query
       )
     );
-  });
+  }), [state.tasks, deferredFilters.taskQuery, deferredFilters.taskStatus]);
   const latestRunId = state.runs[0]?.id || "none";
-  const computeBacklogTasks = filteredTasks.filter((task) => taskIntent(task) === "compute");
-  const theoryBacklogTasks = filteredTasks.filter((task) => taskIntent(task) === "theory");
-  const groupedTasksByDirection = state.directions.map((direction) => ({
-    direction,
-    tasks: filteredTasks.filter((task) => task.direction_slug === direction.slug)
-  }));
-  const groupedComputeTasksByDirection = state.directions.map((direction) => ({
-    direction,
-    tasks: computeBacklogTasks.filter((task) => task.direction_slug === direction.slug)
-  }));
-  const groupedTheoryTasksByDirection = state.directions.map((direction) => ({
-    direction,
-    tasks: theoryBacklogTasks.filter((task) => task.direction_slug === direction.slug)
-  }));
+  const { computeBacklogTasks, theoryBacklogTasks, groupedTasksByDirection, groupedComputeTasksByDirection, groupedTheoryTasksByDirection } = useMemo(() => {
+    const compute = filteredTasks.filter((task) => taskIntent(task) === "compute");
+    const theory = filteredTasks.filter((task) => taskIntent(task) === "theory");
+    return {
+      computeBacklogTasks: compute,
+      theoryBacklogTasks: theory,
+      groupedTasksByDirection: state.directions.map((d) => ({ direction: d, tasks: filteredTasks.filter((t) => t.direction_slug === d.slug) })),
+      groupedComputeTasksByDirection: state.directions.map((d) => ({ direction: d, tasks: compute.filter((t) => t.direction_slug === d.slug) })),
+      groupedTheoryTasksByDirection: state.directions.map((d) => ({ direction: d, tasks: theory.filter((t) => t.direction_slug === d.slug) })),
+    };
+  }, [filteredTasks, state.directions]);
   const visibleRuns = filteredRuns.slice(0, visible.runs);
   const visibleClaims = filteredClaims.slice(0, visible.claims);
   const visibleSources = filteredSources.slice(0, visible.sources);
@@ -2654,7 +1440,7 @@ export default function App() {
       : null;
   const selectedEvidenceClaim =
     selectedEvidence.kind === "claim"
-      ? state.claims.find((claim) => claim.id === selectedEvidence.id) || null
+      ? allClaims.find((claim) => claim.id === selectedEvidence.id) || null
       : null;
   const selectedEvidenceArtifact =
     selectedEvidence.kind === "artifact"
@@ -2700,17 +1486,17 @@ export default function App() {
     }
     if (selectedEvidenceRun) {
       return selectedEvidenceLinks
-        .map((link) => state.claims.find((claim) => claim.id === link.claim_id))
+        .map((link) => allClaims.find((claim) => claim.id === link.claim_id))
         .filter(Boolean);
     }
     if (selectedEvidenceArtifact?.claim_id) {
-      const claim = state.claims.find((item) => item.id === selectedEvidenceArtifact.claim_id);
+      const claim = allClaims.find((item) => item.id === selectedEvidenceArtifact.claim_id);
       return claim ? [claim] : [];
     }
     if (selectedEvidenceArtifact?.run_id) {
       return state.claimRunLinks
         .filter((link) => link.run_id === selectedEvidenceArtifact.run_id)
-        .map((link) => state.claims.find((claim) => claim.id === link.claim_id))
+        .map((link) => allClaims.find((claim) => claim.id === link.claim_id))
         .filter(Boolean);
     }
     return [];
@@ -2745,7 +1531,7 @@ export default function App() {
       meta: `${run.kernel} | ${run.hardware}`,
       openKind: "run"
     })),
-    ...state.claims.map((claim) => ({
+    ...allClaims.map((claim) => ({
       key: `claim-${claim.id}`,
       kind: "claim",
       id: claim.id,
@@ -2778,7 +1564,7 @@ export default function App() {
   ].sort((left, right) => timestampValue(right.timestamp) - timestampValue(left.timestamp));
   const visibleEvidenceLedger = evidenceLedger.slice(0, visible.ledger);
   const orbitFrames = selectedOrbitRun ? buildOrbit(orbitSeedFromRun(selectedOrbitRun), 16) : [];
-  const supportedClaims = state.claims.filter((claim) =>
+  const supportedClaims = allClaims.filter((claim) =>
     ["supported", "promising", "formalize"].includes(claim.status)
   ).length;
   const flaggedSources = state.sources.filter((source) => source.review_status === "flagged").length;
@@ -2810,7 +1596,7 @@ export default function App() {
   const hasEvidence =
     hasLoaded &&
     (state.runs.length > 0 ||
-      state.claims.length > 0 ||
+      allClaims.length > 0 ||
       state.sources.length > 0 ||
       state.tasks.length > 0 ||
       state.artifacts.length > 0);
@@ -2818,21 +1604,24 @@ export default function App() {
     { id: "overview", label: "Overview", count: evidenceLedger.length, note: "Map the whole evidence space first." },
     { id: "inspector", label: "Inspector", count: selectedEvidence.id ? 1 : 0, note: "Read one record deeply and follow its links." },
     { id: "validated", label: "Validated", count: validatedRuns.length, note: "High-trust compute records." },
-    { id: "claims", label: "Claims", count: filteredClaims.length, note: "Theory statements and dependencies." },
+    { id: "claims", label: "Claims", count: filteredClaims.length, note: "Theory statements, hypotheses, and dependencies." },
     { id: "artifacts", label: "Artifacts", count: filteredArtifacts.length, note: "Reports, JSON, notes, and previews." },
     { id: "sources", label: "Sources", count: filteredSources.length, note: "External proof attempts and reviews." },
     { id: "runs", label: "Runs", count: filteredRuns.length, note: "All compute runs, raw and validated." }
   ];
   const operationsViews = [
     { id: "compute", label: "Compute", count: queuedRuns + runningRuns, note: `${queuedRuns} queued, ${runningRuns} live.` },
-    { id: "theory", label: "Theory", count: state.claims.length, note: "Claims, links, and research statements." },
+    { id: "theory", label: "Theory", count: allClaims.length, note: "Claims, hypotheses, links, and research statements." },
     { id: "sources", label: "Sources", count: state.sources.length, note: "Register and review external material." },
     { id: "checks", label: "Checks", count: flaggedSources, note: "Direction review and modular falsification." },
     { id: "backlog", label: "Backlog", count: filteredTasks.length, note: "Tasks and next human-scale actions." }
   ];
   const tracksViews = [
     { id: "overview", label: "Overview", count: state.directions.length, note: "See each lane and its current load." },
-    { id: "directions", label: "Directions", count: state.directions.length, note: "Read the lanes in detail." },
+    { id: "compute-lanes", label: "Compute lanes", count: state.runs.filter(r => r.status === "running" || r.status === "active" || r.status === "queued").length, note: "Live compute: what workers are running and what's queued." },
+    { id: "theory-lanes", label: "Theory lanes", count: state.directions.filter(d => ["two-adic-v2", "lemma-workspace", "inverse-tree-parity", "hypothesis-sandbox"].includes(d.slug)).length, note: "Structure analysis, lemma work, and hypothesis-facing lanes." },
+    { id: "experimental", label: "Experimental kernels", count: state.hypotheses.filter(h => h.direction_slug === "hypothesis-sandbox").length, note: "Sandboxed kernels: cpu-barina and future experimental paths." },
+    { id: "directions", label: "All directions", count: state.directions.length, note: "Read the lanes in detail." },
     { id: "backlog", label: "Task split", count: filteredTasks.length, note: "Separate compute backlog from theory backlog." }
   ];
   const guideViews = [
@@ -2918,6 +1707,10 @@ export default function App() {
 
   useEffect(() => {
     if (!state.computeProfile) {
+      return;
+    }
+    // Don't overwrite slider values while user is actively editing them
+    if (computeSlidersDirty.current) {
       return;
     }
     setQuickForms((current) => {
@@ -3018,14 +1811,14 @@ export default function App() {
   }, [state.sources, quickForms.sourceReviewId]);
 
   useEffect(() => {
-    if (state.claims.length === 0 && state.runs.length === 0) {
+    if (allClaims.length === 0 && state.runs.length === 0) {
       return;
     }
     setQuickForms((current) => {
       const nextClaimId =
-        current.linkClaimId && state.claims.some((claim) => claim.id === current.linkClaimId)
+        current.linkClaimId && allClaims.some((claim) => claim.id === current.linkClaimId)
           ? current.linkClaimId
-          : selectedEvidenceClaim?.id || state.claims[0]?.id || "";
+          : selectedEvidenceClaim?.id || allClaims[0]?.id || "";
       const nextRunId =
         current.linkRunId && state.runs.some((run) => run.id === current.linkRunId)
           ? current.linkRunId
@@ -3040,12 +1833,12 @@ export default function App() {
         linkRunId: nextRunId
       };
     });
-  }, [state.claims, state.runs, selectedEvidenceClaim?.id, selectedEvidenceRun?.id, validatedRuns]);
+  }, [allClaims, state.runs, selectedEvidenceClaim?.id, selectedEvidenceRun?.id, validatedRuns]);
 
   useEffect(() => {
     const hasSelectedItem =
       (selectedEvidence.kind === "run" && state.runs.some((run) => run.id === selectedEvidence.id)) ||
-      (selectedEvidence.kind === "claim" && state.claims.some((claim) => claim.id === selectedEvidence.id)) ||
+      (selectedEvidence.kind === "claim" && allClaims.some((claim) => claim.id === selectedEvidence.id)) ||
       (selectedEvidence.kind === "artifact" && state.artifacts.some((artifact) => artifact.id === selectedEvidence.id));
 
     if (hasSelectedItem) {
@@ -3062,7 +1855,7 @@ export default function App() {
     if (fallback) {
       setSelectedEvidence(fallback);
     }
-  }, [selectedEvidence.kind, selectedEvidence.id, state.runs, state.claims, state.artifacts, validatedRuns, filteredClaims, filteredRuns, filteredArtifacts]);
+  }, [selectedEvidence.kind, selectedEvidence.id, state.runs, allClaims, state.artifacts, validatedRuns, filteredClaims, filteredRuns, filteredArtifacts]);
 
   function reveal(key, step) {
     setVisible((current) => ({ ...current, [key]: current[key] + step }));
@@ -3077,7 +1870,9 @@ export default function App() {
       ...current,
       runQuery: "",
       runStatus: "all",
-      runHardware: "all"
+      runHardware: "all",
+      runDirection: "all",
+      runCategory: "all"
     }));
   }
 
@@ -3092,7 +1887,10 @@ export default function App() {
   function clearClaimFilters() {
     setFilters((current) => ({
       ...current,
-      claimQuery: ""
+      claimQuery: "",
+      claimStatus: "all",
+      claimDirection: "all",
+      claimFamily: "all"
     }));
   }
 
@@ -3100,18 +1898,24 @@ export default function App() {
     setFilters((current) => ({
       ...current,
       sourceQuery: "",
-      sourceStatus: "all"
+      sourceStatus: "all",
+      sourceType: "all"
     }));
   }
 
   function clearArtifactFilters() {
     setFilters((current) => ({
       ...current,
-      artifactQuery: ""
+      artifactQuery: "",
+      artifactKind: "all",
+      artifactDirection: "all"
     }));
   }
 
   function updateQuickForm(key, value) {
+    if (["computeSystemPercent", "computeCpuPercent", "computeGpuPercent"].includes(key)) {
+      computeSlidersDirty.current = true;
+    }
     setQuickForms((current) => ({ ...current, [key]: value }));
   }
 
@@ -3183,6 +1987,26 @@ export default function App() {
     }
   }
 
+  // Sync activeTab → URL hash (write)
+  useEffect(() => {
+    const current = window.location.hash.slice(1);
+    if (current !== activeTab) {
+      window.history.pushState(null, "", `#${activeTab}`);
+    }
+  }, [activeTab]);
+
+  // Sync URL hash → activeTab (back/forward buttons)
+  useEffect(() => {
+    function onHashChange() {
+      const hash = window.location.hash.slice(1);
+      if (tabs.some(t => t.id === hash)) {
+        setActiveTab(hash);
+      }
+    }
+    window.addEventListener("hashchange", onHashChange);
+    return () => window.removeEventListener("hashchange", onHashChange);
+  }, []);
+
   function selectTab(tabId) {
     setActiveTab(tabId);
     setNavOpen(false);
@@ -3197,7 +2021,7 @@ export default function App() {
     try {
       const result = await operation();
       if (onSuccess) {
-        onSuccess(result);
+        await onSuccess(result);
       }
       setActionState({
         pendingKey: "",
@@ -3320,10 +2144,11 @@ export default function App() {
     );
   }
 
-  async function handleSourceSubmit(event) {
+  async function handleSourceSubmit(event, options = {}) {
     event.preventDefault();
+    const requestDraft = Boolean(options.requestDraft);
     await runAction(
-      "source",
+      requestDraft ? "source + gemini triage" : "source",
       () =>
         postJson(endpoints.sources, {
           direction_slug: quickForms.sourceDirection,
@@ -3337,7 +2162,7 @@ export default function App() {
           summary: quickForms.sourceSummary,
           fallacy_tags: parseCsvList(quickForms.sourceTags)
         }),
-      (result) => {
+      async (result) => {
         setQuickForms((current) => ({
           ...current,
           sourceTitle: "",
@@ -3348,6 +2173,14 @@ export default function App() {
           sourceMapVariant: "unspecified",
           ...reviewFormPatch(result || null)
         }));
+        if (requestDraft && result?.id && state.llmStatus?.ready) {
+          const draft = await postJson(endpoints.sourceReviewDraft(result.id));
+          setLlmDraft(draft);
+          setQuickForms((current) => ({
+            ...current,
+            ...draftFormPatch(draft || null)
+          }));
+        }
       }
     );
   }
@@ -3505,17 +2338,39 @@ export default function App() {
       "compute profile",
       () =>
         postJson(endpoints.computeProfile, {
+          continuous_enabled: state.computeProfile?.continuous_enabled !== false,
           system_percent: Number(quickForms.computeSystemPercent || 100),
           cpu_percent: Number(quickForms.computeCpuPercent || 100),
           gpu_percent: Number(quickForms.computeGpuPercent || 100)
         }),
       (result) => {
+        computeSlidersDirty.current = false;
         setState((current) => ({
           ...current,
           computeProfile: result
         }));
       }
     );
+  }
+
+  async function handleToggleContinuous() {
+    const newEnabled = !(state.computeProfile?.continuous_enabled !== false);
+    setActionState({ pendingKey: "toggle continuous", tone: "", message: "" });
+    try {
+      const result = await postJson(endpoints.computeProfile, {
+        continuous_enabled: newEnabled,
+        system_percent: state.computeProfile?.system_percent ?? 100,
+        cpu_percent: state.computeProfile?.cpu_percent ?? 100,
+        gpu_percent: state.computeProfile?.gpu_percent ?? 100,
+      });
+      setState((current) => ({ ...current, computeProfile: result }));
+      setRefreshNonce((n) => n + 1);
+    } catch (e) {
+      console.error("Toggle continuous failed:", e);
+      setActionState({ pendingKey: "", tone: "bad", message: e.message || "Toggle failed." });
+      return;
+    }
+    setActionState({ pendingKey: "", tone: "", message: "" });
   }
 
   async function handleDeleteSource(sourceId) {
@@ -3560,7 +2415,12 @@ export default function App() {
       <aside className="sidebar" aria-label="Dashboard navigation">
         <div className="sidebar-brand">
           <div className="brand-lockup">
-            <img className="brand-mark" src="/icon.svg" alt="Collatz Lab icon" title="Collatz Lab mark: a collapsing square grid on the left and a C-shaped orbit on the right." />
+            <img
+              className="brand-mark"
+              src={theme === "dark" ? "/icon-dark.svg" : "/icon.svg"}
+              alt="Collatz Lab - hailstone orbit converging to 1"
+              title="Collatz Lab mark: hailstone (3n+1) trajectory toward 1, computational verification lab."
+            />
             <div>
               <p className="eyebrow">Collatz Lab</p>
               <strong>Research shell</strong>
@@ -3686,6 +2546,11 @@ export default function App() {
         </form>
         <div className="sidebar-legal">
           <div className="legal-row">
+            <button type="button" className="theme-toggle" onClick={cycleTheme} title="Toggle colour theme">
+              {theme === "dark" ? "🌙 Dark" : "☀ Light"}
+            </button>
+          </div>
+          <div className="legal-row">
             <a href="https://github.com/cosmintrica/CollatzLab" target="_blank" rel="noreferrer">GitHub</a>
             <span className="legal-separator">•</span>
             <a href="https://github.com/cosmintrica/CollatzLab/blob/main/LICENSE" target="_blank" rel="noreferrer">Apache 2.0</a>
@@ -3719,7 +2584,12 @@ export default function App() {
           </button>
           <div className="mobile-topbar-copy">
             <div className="brand-lockup compact">
-              <img className="brand-mark small" src="/icon.svg" alt="Collatz Lab icon" title="Collatz Lab mark: a collapsing square grid on the left and a C-shaped orbit on the right." />
+              <img
+              className="brand-mark small"
+              src={theme === "dark" ? "/icon-dark.svg" : "/icon.svg"}
+              alt="Collatz Lab - hailstone orbit converging to 1"
+              title="Collatz Lab mark: hailstone (3n+1) trajectory toward 1, computational verification lab."
+            />
               <div>
                 <span>Collatz Lab</span>
                 <strong>{activeTabLabel}</strong>
@@ -4130,6 +3000,52 @@ export default function App() {
               )}
             </article>
           </div>
+          {runningRunOptions.length > 0 && (
+            <div className="live-activity-panel">
+              <span className="live-activity-title"><span className="live-dot" /> Active runs</span>
+              <div className="live-activity-rows">
+                {runningRunOptions.map((run) => {
+                  const d = runLiveDetails(run);
+                  const speedLabel = d.speed > 1e6 ? `${(d.speed / 1e6).toFixed(1)}M/s`
+                    : d.speed > 1e3 ? `${(d.speed / 1e3).toFixed(0)}K/s` : `${Math.round(d.speed)}/s`;
+                  const betweenCheckpoints = d.processed === 0 && run.status === "running";
+                  return (
+                    <div key={run.id} className="live-activity-row">
+                      <div className="live-activity-head">
+                        <span className="live-run-id">{run.id}</span>
+                        <span className="live-run-hw">{run.hardware}</span>
+                        <span className="live-run-kernel">{run.kernel}</span>
+                        <span className="live-run-speed">{d.speed > 0 ? speedLabel : betweenCheckpoints ? "computing..." : "..."}</span>
+                        {d.eta && <span className="live-run-eta">ETA {d.eta}</span>}
+                      </div>
+                      <div className="live-activity-bar-wrap">
+                        <div className={`live-activity-bar ${betweenCheckpoints ? "live-bar-pulse" : ""}`}>
+                          <div className="live-activity-bar-fill" style={{ width: betweenCheckpoints ? "100%" : `${d.percent}%` }} />
+                        </div>
+                        <span className="live-activity-pct">{betweenCheckpoints ? "..." : `${d.percent.toFixed(1)}%`}</span>
+                      </div>
+                      <div className="live-activity-details">
+                        {betweenCheckpoints ? (
+                          <span>Processing first batch ({d.total.toLocaleString()} seeds) — checkpoint pending</span>
+                        ) : (
+                          <>
+                            <span>{d.processed.toLocaleString()} / {d.total.toLocaleString()} seeds</span>
+                            {d.currentSeed > 0 && <span className="live-seed">@ {d.currentSeed.toLocaleString()}</span>}
+                          </>
+                        )}
+                      </div>
+                      {(d.maxTST || d.maxExc) && (
+                        <div className="live-activity-records">
+                          {d.maxTST && <span className="live-record">TST record: {d.maxTST.value} (n={Number(d.maxTST.n).toLocaleString()})</span>}
+                          {d.maxExc && <span className="live-record">Peak: {Number(d.maxExc.value).toLocaleString()} (n={Number(d.maxExc.n).toLocaleString()})</span>}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
           <div className="live-math-shell">
             <RunRail runs={runRailOptions} selectedRunId={selectedOrbitRun?.id ?? ""} onSelectRun={selectOrbitRun} />
             <OrbitPanel
@@ -4162,9 +3078,14 @@ export default function App() {
                     <p>
                       {selectedOrbitRun.range_start} - {selectedOrbitRun.range_end} | {selectedOrbitRun.kernel} | {selectedOrbitRun.hardware}
                     </p>
-                    <p className="meta-line">
-                      {runRangeMagnitude(selectedOrbitRun)} | {runMilestoneLabel(selectedOrbitRun)}
-                    </p>
+                    {runRangeMagnitudeLatex(selectedOrbitRun)
+                      ? <KatexExpr
+                          latex={`${runRangeMagnitudeLatex(selectedOrbitRun)} \\;\\;\\; ${runMilestoneLabelLatex(selectedOrbitRun)}`}
+                          display={true}
+                          className="run-ledger-math"
+                        />
+                      : <p className="meta-line">{runRangeMagnitude(selectedOrbitRun)} | {runMilestoneLabel(selectedOrbitRun)}</p>
+                    }
                     <p className="meta-line">
                       checkpoint {selectedOrbitRun.checkpoint?.last_processed ?? "unknown"} | next {selectedOrbitRun.checkpoint?.next_value ?? "unknown"}
                     </p>
@@ -4268,8 +3189,8 @@ export default function App() {
                 />
                 <CapabilityCard
                   label="Claims tracked"
-                  value={state.claims.length}
-                  note="Theory lives here, separate from validation and run output."
+                  value={allClaims.length}
+                  note="Claims and hypothesis objects live here, separate from validation and run output."
                 />
               </div>
               <div className="evidence-summary-strip">
@@ -4279,12 +3200,120 @@ export default function App() {
                     <strong>{prettyLabel(direction.status)}</strong>
                     <p>
                       {directionStats[direction.slug]?.computeTasks ?? 0} compute tasks, {directionStats[direction.slug]?.theoryTasks ?? 0} theory tasks,
-                      {" "}{directionStats[direction.slug]?.runs ?? 0} saved runs, {directionStats[direction.slug]?.claims ?? 0} claims.
+                      {" "}{directionStats[direction.slug]?.runs ?? 0} saved runs, {directionStats[direction.slug]?.claims ?? 0} claims,
+                      {" "}{directionStats[direction.slug]?.artifacts ?? 0} artifacts.
                     </p>
                   </article>
                 ))}
               </div>
             </>
+          ) : tracksView === "compute-lanes" ? (
+            <div className="stack-list">
+              <div className="capability-grid">
+                <CapabilityCard
+                  label="Verification lane"
+                  value={state.runs.filter(r => r.direction_slug === "verification" && ["running","queued"].includes(r.status)).length}
+                  note={`Active or queued runs. Coverage: ${approximatePowerOfTwo(Math.max(...state.runs.filter(r => ["completed","validated"].includes(r.status)).map(r => r.range_end || 0), 0))} seeds verified.`}
+                />
+                <CapabilityCard
+                  label="cpu-sieve kernel"
+                  value={state.runs.filter(r => r.kernel === "cpu-sieve" && r.status === "running").length > 0 ? "active" : "idle"}
+                  note="Standard Collatz descent verification. Canonical. Every odd seed individually verified."
+                />
+                <CapabilityCard
+                  label="gpu-sieve kernel"
+                  value={state.runs.filter(r => r.kernel === "gpu-sieve" && r.status === "running").length > 0 ? "active" : "idle"}
+                  note="GPU descent verification. Same semantics as cpu-sieve, different hardware."
+                />
+                <CapabilityCard
+                  label="Validated runs"
+                  value={state.runs.filter(r => r.status === "validated").length}
+                  note="Independently cross-checked against descent reference. These count as evidence."
+                />
+              </div>
+              <div className="panel direction-panel">
+                <SectionIntro title="Live compute runs" text="Currently running or queued verification runs." />
+                {state.runs.filter(r => ["running","queued"].includes(r.status)).length === 0 ? (
+                  <p className="meta-line">No active runs. Workers are idle or continuous compute is paused.</p>
+                ) : (
+                  <div className="stack-list compact-stack">
+                    {state.runs.filter(r => ["running","queued"].includes(r.status)).slice(0, 8).map(run => (
+                      <article key={run.id} className="list-card">
+                        <strong>{run.id}</strong> <span className="meta-line">{run.kernel} · {run.hardware} · {run.status}</span>
+                        <span className="ts-micro">{formatCompactTimestamp(run.started_at || run.created_at)}</span>
+                        <p className="meta-line">[{run.range_start?.toLocaleString()}, {run.range_end?.toLocaleString()}]</p>
+                        {run.summary ? <p className="meta-line">{run.summary}</p> : null}
+                      </article>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          ) : tracksView === "theory-lanes" ? (
+            <div className="stack-list">
+              <div className="capability-grid">
+                {state.directions.filter(d => ["two-adic-v2", "lemma-workspace", "inverse-tree-parity", "hypothesis-sandbox"].includes(d.slug)).map(d => (
+                  <CapabilityCard
+                    key={d.slug}
+                    label={d.title}
+                    value={prettyLabel(d.status)}
+                    note={`${directionStats[d.slug]?.theoryTasks ?? 0} theory tasks, ${directionStats[d.slug]?.claims ?? 0} claims, ${directionStats[d.slug]?.runs ?? 0} runs.`}
+                  />
+                ))}
+              </div>
+              <div className="panel direction-panel">
+                <SectionIntro title="Theory lanes" text="These lanes do structural analysis, lemma work, and 2-adic valuation research. They produce claims and artifacts, not just run records." />
+                <div className="stack-list compact-stack">
+                  {state.hypotheses.slice(0, 6).map(h => (
+                    <article key={h.id} className="list-card">
+                      <strong>{h.title}</strong>
+                      <p className="meta-line">{h.category} · {h.status} · {h.direction_slug}</p>
+                      <p>{h.statement?.slice(0, 120)}{h.statement?.length > 120 ? "…" : ""}</p>
+                    </article>
+                  ))}
+                </div>
+              </div>
+            </div>
+          ) : tracksView === "experimental" ? (
+            <div className="stack-list">
+              <div className="capability-grid">
+                <CapabilityCard
+                  label="cpu-barina kernel"
+                  value="experimental"
+                  note="Barina domain-switching algorithm (verified to 2^71 in literature). Step count differs from standard Collatz — not yet cross-validated for our full range."
+                />
+                <CapabilityCard
+                  label="Mod-3 sieve"
+                  value="hypothesis"
+                  note="Hypothesis: n ≡ 2 (mod 3) converges by construction. NOT in canonical kernel — requires rigorous proof first. Tracked in hypothesis-sandbox."
+                />
+                <CapabilityCard
+                  label="hypothesis-sandbox"
+                  value={state.directions.find(d => d.slug === "hypothesis-sandbox")?.status ?? "unknown"}
+                  note={`${directionStats["hypothesis-sandbox"]?.claims ?? 0} hypotheses tracked. These are tested but not yet promoted to canonical verification.`}
+                />
+                <CapabilityCard
+                  label="Experimental runs"
+                  value={state.runs.filter(r => r.kernel === "cpu-barina").length}
+                  note="Barina kernel runs for performance comparison. Results are logged but not counted as canonical verification."
+                />
+              </div>
+              <div className="panel direction-panel">
+                <SectionIntro
+                  title="Experimental kernels - academic integrity notice"
+                  text="These kernels and hypotheses are under controlled evaluation. They cannot graduate to canonical verification without rigorous proof and independent cross-validation. Everything here is clearly labelled experimental in the run record."
+                />
+                <div className="stack-list compact-stack">
+                  {state.hypotheses.filter(h => h.direction_slug === "hypothesis-sandbox").slice(0, 8).map(h => (
+                    <article key={h.id} className="list-card">
+                      <strong>{h.title}</strong>
+                      <p className="meta-line">{h.category} · {h.status}</p>
+                      <p>{h.statement?.slice(0, 150)}{h.statement?.length > 150 ? "…" : ""}</p>
+                    </article>
+                  ))}
+                </div>
+              </div>
+            </div>
           ) : tracksView === "backlog" ? (
             <div className="stack-list">
               <div className="surface-split">
@@ -4374,79 +3403,179 @@ export default function App() {
             </div>
           ) : (
             <div className="stack-list">
-              {visibleDirections.map((direction) => (
-                <article key={direction.slug} className="panel direction-panel">
-                  <div className="card-head">
-                    <div>
-                      <h3>{direction.title}</h3>
-                      <p>{direction.slug}</p>
-                    </div>
-                    <StatusPill value={direction.status} />
-                  </div>
-                  <p>{direction.description}</p>
-                  {directionGuide[direction.slug] ? (
-                    <div className="direction-guide-grid">
+              {visibleDirections.map((direction) => {
+                const stats = directionStats[direction.slug] || {};
+                const guide = directionGuide[direction.slug];
+                return (
+                  <article key={direction.slug} className="panel direction-panel">
+                    <div className="card-head">
                       <div>
-                        <span className={`evidence-type-pill evidence-type-${direction.slug}`}>{directionGuide[direction.slug].label}</span>
+                        <h3>{direction.title}</h3>
+                        <p>{direction.slug}</p>
                       </div>
-                      <div className="note-block">
-                        <p><strong>Role</strong> {directionGuide[direction.slug].role}</p>
-                        <p><strong>Caution</strong> {directionGuide[direction.slug].caution}</p>
+                      <StatusPill value={direction.status} />
+                    </div>
+                    <span className="ts-micro">{formatCompactTimestamp(direction.updated_at || direction.created_at)}</span>
+                    <p>{direction.description}</p>
+                    {guide ? (
+                      <div className="direction-guide-grid">
+                        <div>
+                          <span className={`evidence-type-pill evidence-type-${direction.slug}`}>{guide.label}</span>
+                        </div>
+                        <div className="note-block">
+                          <p><strong>Role</strong> {guide.role}</p>
+                          <p><strong>Caution</strong> {guide.caution}</p>
+                        </div>
+                      </div>
+                    ) : null}
+                    <div className="metric-grid">
+                      <div>
+                        <span className="metric-label">Owner</span>
+                        <strong>{direction.owner}</strong>
+                      </div>
+                      <div>
+                        <span className="metric-label">Score</span>
+                        <strong>{direction.score}</strong>
+                      </div>
+                      <div>
+                        <span className="metric-label">Compute tasks</span>
+                        <strong>{stats.computeTasks ?? 0}</strong>
+                      </div>
+                      <div>
+                        <span className="metric-label">Theory tasks</span>
+                        <strong>{stats.theoryTasks ?? 0}</strong>
+                      </div>
+                      <div>
+                        <span className="metric-label">Active/queued</span>
+                        <strong>{stats.activeRuns ?? 0}</strong>
+                      </div>
+                      <div>
+                        <span className="metric-label">Validated</span>
+                        <strong>{stats.validatedRuns ?? 0}</strong>
+                      </div>
+                      <div>
+                        <span className="metric-label">Saved runs</span>
+                        <strong>{stats.runs ?? 0}</strong>
+                      </div>
+                      <div>
+                        <span className="metric-label">Claims / hypotheses</span>
+                        <strong>{stats.claims ?? 0}</strong>
+                      </div>
+                      <div>
+                        <span className="metric-label">Artifacts</span>
+                        <strong>{stats.artifacts ?? 0}</strong>
                       </div>
                     </div>
-                  ) : null}
-                  <div className="metric-grid">
-                    <div>
-                      <span className="metric-label">Owner</span>
-                      <strong>{direction.owner}</strong>
+                    <div className="note-block">
+                      <p><strong>Success</strong> {direction.success_criteria}</p>
+                      <p><strong>Abandon</strong> {direction.abandon_criteria}</p>
+                      <p><strong>Evidence shape</strong> {guide?.evidence || "Mixed lane."}</p>
+                      <p>
+                        <strong>How to read this lane</strong>{" "}
+                        {stats.runs === 0
+                          ? "This lane is currently theory / structure heavy, so progress may appear first as tasks, claims, or artifacts rather than compute runs."
+                          : "This lane already has saved compute evidence, so its claims and artifacts should be read together with the run ledger."}
+                      </p>
                     </div>
-                    <div>
-                      <span className="metric-label">Score</span>
-                      <strong>{direction.score}</strong>
+                    {direction.slug === "verification" ? (
+                      <div className="detail-related-card">
+                        <span className="metric-label">Canonical and experimental kernels</span>
+                        <div className="relation-chip-list">
+                          {["cpu-sieve", "gpu-sieve", "cpu-barina", "cpu-parallel-odd"].map((kernel) => (
+                            <span key={`${direction.slug}-${kernel}`} className="relation-chip relation-chip-muted">
+                              {kernel}
+                            </span>
+                          ))}
+                        </div>
+                        <p className="meta-line">`cpu-sieve` and `gpu-sieve` are the active verification lanes. `cpu-barina` is exposed as experimental and may have zero runs at the moment.</p>
+                      </div>
+                    ) : null}
+                    <div className="direction-activity-grid">
+                      <article className="detail-related-card">
+                        <span className="metric-label">Recent runs</span>
+                        {stats.recentRuns?.length ? (
+                          <div className="direction-activity-list">
+                            {stats.recentRuns.map((run) => (
+                              <button
+                                key={run.id}
+                                type="button"
+                                className="detail-link-button"
+                                onClick={() => {
+                                  setSelectedEvidence({ kind: "run", id: run.id });
+                                  setActiveTab("evidence");
+                                }}
+                              >
+                                <strong>{run.id}</strong>
+                                <span>{describeRunPurpose(run)}</span>
+                              </button>
+                            ))}
+                          </div>
+                        ) : (
+                          <p>No compute runs saved for this lane yet.</p>
+                        )}
+                      </article>
+                      <article className="detail-related-card">
+                        <span className="metric-label">Recent claims / hypotheses</span>
+                        {stats.recentClaims?.length ? (
+                          <div className="direction-activity-list">
+                            {stats.recentClaims.map((claim) => (
+                              <button
+                                key={claim.id}
+                                type="button"
+                                className="detail-link-button"
+                                onClick={() => {
+                                  setSelectedEvidence({ kind: "claim", id: claim.id });
+                                  setActiveTab("evidence");
+                                }}
+                              >
+                                <strong>{claim.id}</strong>
+                                <span>{claim.title}</span>
+                              </button>
+                            ))}
+                          </div>
+                        ) : (
+                          <p>No claim objects saved for this lane yet.</p>
+                        )}
+                      </article>
+                      <article className="detail-related-card">
+                        <span className="metric-label">Recent artifacts</span>
+                        {stats.recentArtifacts?.length ? (
+                          <div className="direction-activity-list">
+                            {stats.recentArtifacts.map((artifact) => (
+                              <button
+                                key={artifact.id}
+                                type="button"
+                                className="detail-link-button"
+                                onClick={() => {
+                                  setSelectedEvidence({ kind: "artifact", id: artifact.id });
+                                  setActiveTab("evidence");
+                                }}
+                              >
+                                <strong>{artifact.id}</strong>
+                                <span>{artifactLabel(artifact.path, artifact.id)}</span>
+                              </button>
+                            ))}
+                          </div>
+                        ) : (
+                          <p>No artifacts saved for this lane yet.</p>
+                        )}
+                      </article>
                     </div>
-                    <div>
-                      <span className="metric-label">Compute tasks</span>
-                      <strong>{directionStats[direction.slug]?.computeTasks ?? 0}</strong>
-                    </div>
-                    <div>
-                      <span className="metric-label">Theory tasks</span>
-                      <strong>{directionStats[direction.slug]?.theoryTasks ?? 0}</strong>
-                    </div>
-                    <div>
-                      <span className="metric-label">Open tasks</span>
-                      <strong>{directionStats[direction.slug]?.tasks ?? 0}</strong>
-                    </div>
-                    <div>
-                      <span className="metric-label">Active/queued</span>
-                      <strong>{directionStats[direction.slug]?.activeRuns ?? 0}</strong>
-                    </div>
-                    <div>
-                      <span className="metric-label">Validated</span>
-                      <strong>{directionStats[direction.slug]?.validatedRuns ?? 0}</strong>
-                    </div>
-                    <div>
-                      <span className="metric-label">Saved runs</span>
-                      <strong>{directionStats[direction.slug]?.runs ?? 0}</strong>
-                    </div>
-                    <div>
-                      <span className="metric-label">Claims</span>
-                      <strong>{directionStats[direction.slug]?.claims ?? 0}</strong>
-                    </div>
-                  </div>
-                  <div className="note-block">
-                    <p><strong>Success</strong> {direction.success_criteria}</p>
-                    <p><strong>Abandon</strong> {direction.abandon_criteria}</p>
-                    <p><strong>Read this lane as</strong> {directionGuide[direction.slug]?.role || "A research lane with its own evidence and abandonment rules."}</p>
-                    <p><strong>Evidence shape</strong> {directionGuide[direction.slug]?.evidence || "Mixed lane."}</p>
-                    <p>
-                      <strong>Why zero runs can still be correct</strong>{" "}
-                      {directionStats[direction.slug]?.runs === 0
-                        ? "This lane is currently producing theory or structure tasks rather than saved compute runs."
-                        : "This lane already has saved compute evidence in the run ledger."}
-                    </p>
-                  </div>
-                </article>
-              ))}
+                    {stats.recentTasks?.length ? (
+                      <div className="detail-related-card">
+                        <span className="metric-label">Latest tasks and outcomes</span>
+                        <div className="relation-chip-list">
+                          {stats.recentTasks.map((task) => (
+                            <span key={task.id} className="relation-chip relation-chip-muted">
+                              {task.id} {prettyLabel(task.status)}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    ) : null}
+                  </article>
+                );
+              })}
             </div>
           )}
         </section>
@@ -4704,6 +3833,7 @@ export default function App() {
                         </div>
                         <StatusPill value={run.status} />
                       </div>
+                      <span className="ts-micro">{formatCompactTimestamp(run.finished_at || run.started_at || run.created_at)}</span>
                       <div className="metric-grid three-up">
                         <div>
                           <span className="metric-label">Direction</span>
@@ -4771,6 +3901,19 @@ export default function App() {
                     <option value="failed">Failed</option>
                   </select>
                 </FilterField>
+                <FilterField label="Direction">
+                  <select
+                    className="filter-input"
+                    value={filters.runDirection}
+                    onChange={(event) => updateFilter("runDirection", event.target.value)}
+                  >
+                    {runDirectionOptions.map((option) => (
+                      <option key={option} value={option}>
+                        {prettyLabel(option)}
+                      </option>
+                    ))}
+                  </select>
+                </FilterField>
                 <FilterField label="Hardware">
                   <select
                     className="filter-input"
@@ -4781,6 +3924,21 @@ export default function App() {
                     <option value="cpu">CPU</option>
                     <option value="gpu">GPU</option>
                     <option value="mixed">Mixed</option>
+                  </select>
+                </FilterField>
+                <FilterField label="Category">
+                  <select
+                    className="filter-input"
+                    value={filters.runCategory}
+                    onChange={(event) => updateFilter("runCategory", event.target.value)}
+                  >
+                    <option value="all">All</option>
+                    <option value="continuous">Continuous</option>
+                    <option value="recovery">Recovery</option>
+                    <option value="legacy-failed">Legacy failed</option>
+                    <option value="legacy-superseded">Legacy superseded</option>
+                    <option value="experimental">Experimental</option>
+                    <option value="standard">Standard</option>
                   </select>
                 </FilterField>
               </FilterBar>
@@ -4802,6 +3960,7 @@ export default function App() {
                         <StatusPill value={run.status} />
                       </div>
                       <h3>{run.name}</h3>
+                      <span className="ts-micro">{formatCompactTimestamp(run.finished_at || run.started_at || run.created_at)}</span>
                       <div className="metric-grid three-up">
                         <div>
                           <span className="metric-label">Direction</span>
@@ -4816,8 +3975,9 @@ export default function App() {
                           <strong>{run.metrics?.max_excursion?.value ?? "-"}</strong>
                         </div>
                       </div>
+                      <p>{describeRunPurpose(run)}</p>
                       <p className="meta-line">
-                        {run.kernel} | {run.hardware} | {run.summary || "No summary yet"}
+                        {run.kernel} | {run.hardware} | {prettyLabel(classifyRunCategory(run))}{describeRunStatusDetail(run) ? ` | ${describeRunStatusDetail(run)}` : ""}
                       </p>
                       <div className="card-action-row">
                         <button className="secondary-button" type="button" onClick={() => openEvidence("run", run.id)}>
@@ -4857,6 +4017,43 @@ export default function App() {
                     placeholder="claim, direction, status..."
                   />
                 </FilterField>
+                <FilterField label="Status">
+                  <select
+                    className="filter-input"
+                    value={filters.claimStatus}
+                    onChange={(event) => updateFilter("claimStatus", event.target.value)}
+                  >
+                    {claimStatusFilterOptions.map((option) => (
+                      <option key={option} value={option}>
+                        {prettyLabel(option)}
+                      </option>
+                    ))}
+                  </select>
+                </FilterField>
+                <FilterField label="Direction">
+                  <select
+                    className="filter-input"
+                    value={filters.claimDirection}
+                    onChange={(event) => updateFilter("claimDirection", event.target.value)}
+                  >
+                    {claimDirectionOptions.map((option) => (
+                      <option key={option} value={option}>
+                        {prettyLabel(option)}
+                      </option>
+                    ))}
+                  </select>
+                </FilterField>
+                <FilterField label="Family">
+                  <select
+                    className="filter-input"
+                    value={filters.claimFamily}
+                    onChange={(event) => updateFilter("claimFamily", event.target.value)}
+                  >
+                    <option value="all">All</option>
+                    <option value="claim">Claims</option>
+                    <option value="hypothesis">Hypotheses</option>
+                  </select>
+                </FilterField>
               </FilterBar>
               {!hasLoaded ? (
                 <section className="loading-banner">Waiting for real claim data...</section>
@@ -4874,6 +4071,7 @@ export default function App() {
                         </div>
                         <StatusPill value={claim.status} />
                       </div>
+                      <span className="ts-micro">{formatCompactTimestamp(claim.updated_at || claim.created_at)}</span>
                       <p>{claim.statement}</p>
                       <p className="meta-line">
                         Dependencies: {claim.dependencies?.length ? claim.dependencies.join(", ") : "none"}
@@ -4916,6 +4114,32 @@ export default function App() {
                     placeholder="path, checksum, kind..."
                   />
                 </FilterField>
+                <FilterField label="Kind">
+                  <select
+                    className="filter-input"
+                    value={filters.artifactKind}
+                    onChange={(event) => updateFilter("artifactKind", event.target.value)}
+                  >
+                    {artifactKindOptions.map((option) => (
+                      <option key={option} value={option}>
+                        {prettyLabel(option)}
+                      </option>
+                    ))}
+                  </select>
+                </FilterField>
+                <FilterField label="Direction">
+                  <select
+                    className="filter-input"
+                    value={filters.artifactDirection}
+                    onChange={(event) => updateFilter("artifactDirection", event.target.value)}
+                  >
+                    {artifactDirectionOptions.map((option) => (
+                      <option key={option} value={option}>
+                        {prettyLabel(option)}
+                      </option>
+                    ))}
+                  </select>
+                </FilterField>
               </FilterBar>
               {!hasLoaded ? (
                 <section className="loading-banner">Waiting for real artifact data...</section>
@@ -4932,6 +4156,7 @@ export default function App() {
                         </div>
                         <StatusPill value={artifact.kind} />
                       </div>
+                      <span className="ts-micro">{formatCompactTimestamp(artifact.created_at)}</span>
                       <p>{artifact.path}</p>
                       <p className="checksum">sha256: {artifact.checksum.slice(0, 18)}...</p>
                       <div className="card-action-row">
@@ -4989,6 +4214,19 @@ export default function App() {
                     ))}
                   </select>
                 </FilterField>
+                <FilterField label="Source type">
+                  <select
+                    className="filter-input"
+                    value={filters.sourceType}
+                    onChange={(event) => updateFilter("sourceType", event.target.value)}
+                  >
+                    {sourceTypeFilterOptions.map((option) => (
+                      <option key={option} value={option}>
+                        {prettyLabel(option)}
+                      </option>
+                    ))}
+                  </select>
+                </FilterField>
               </FilterBar>
               {!hasLoaded ? (
                 <section className="loading-banner">Waiting for source registry data...</section>
@@ -5005,6 +4243,7 @@ export default function App() {
                         </div>
                         <StatusPill value={source.review_status} />
                       </div>
+                      <span className="ts-micro">{formatCompactTimestamp(source.updated_at || source.created_at)}</span>
                       <p>{source.summary || "No review summary yet."}</p>
                       <div className="metric-grid">
                         <div>
@@ -5320,8 +4559,8 @@ export default function App() {
                       value={quickForms.linkClaimId}
                       onChange={(event) => updateQuickForm("linkClaimId", event.target.value)}
                     >
-                      {state.claims.length === 0 ? <option value="">No claims yet</option> : null}
-                      {state.claims.map((claim) => (
+                      {allClaims.length === 0 ? <option value="">No claims yet</option> : null}
+                      {allClaims.map((claim) => (
                         <option key={claim.id} value={claim.id}>
                           {claim.id} - {claim.title}
                         </option>
@@ -5363,9 +4602,12 @@ export default function App() {
               ) : null}
 
               {operationsView === "sources" ? (
-              <form className="action-card" onSubmit={handleSourceSubmit}>
+              <form className="action-card" onSubmit={(event) => handleSourceSubmit(event)}>
                 <h3>Register source</h3>
-                <p>Store an external proof attempt, blog post, paper, or forum thread before trusting or rejecting it.</p>
+                <p>Store an external proof attempt, blog post, paper, forum thread, or manual note before trusting or rejecting it.</p>
+                <div className="note-block note-block-compact">
+                  <p><strong>Safe intake flow</strong> Register the source, optionally ask Gemini for a draft triage, then review it yourself against the rubric before it affects any claim.</p>
+                </div>
                 <div className="action-fields">
                   <ActionField label="Direction">
                     <select
@@ -5486,9 +4728,20 @@ export default function App() {
                     </div>
                   </div>
                 </div>
-                <button className="secondary-button action-button" type="submit" disabled={actionState.pendingKey === "source"}>
-                  {actionState.pendingKey === "source" ? "Saving..." : "Register source"}
-                </button>
+                <div className="action-button-row">
+                  <button className="secondary-button action-button" type="submit" disabled={actionState.pendingKey === "source" || actionState.pendingKey === "source + gemini triage"}>
+                    {actionState.pendingKey === "source" ? "Saving..." : "Register source"}
+                  </button>
+                  <button
+                    className="secondary-button action-button"
+                    type="button"
+                    onClick={(event) => handleSourceSubmit(event, { requestDraft: true })}
+                    disabled={!state.llmStatus?.ready || actionState.pendingKey === "source" || actionState.pendingKey === "source + gemini triage"}
+                    title="Register the source, then immediately ask Gemini for a draft review without auto-promoting it."
+                  >
+                    {actionState.pendingKey === "source + gemini triage" ? "Registering + drafting..." : "Register + Gemini triage"}
+                  </button>
+                </div>
               </form>
               ) : null}
 
@@ -5997,10 +5250,11 @@ export default function App() {
                       </div>
                       <StatusPill value={worker.status} />
                     </div>
+                    <span className="ts-micro">registered {formatCompactTimestamp(worker.created_at)}</span>
                     <p className="meta-line">
                       {worker.hardware} | current run {worker.current_run_id ?? "none"}
                     </p>
-                    <p className="meta-line">heartbeat {worker.last_heartbeat_at ?? "unknown"}</p>
+                    <p className="meta-line">heartbeat {formatCompactTimestamp(worker.last_heartbeat_at) || "unknown"}</p>
                   </article>
                 ))}
               </div>
@@ -6075,6 +5329,12 @@ export default function App() {
           )}
           </>
           ) : null}
+        </section>
+        ) : null}
+
+        {activeTab === "paper" ? (
+        <section className="tab-panel tab-panel-paper">
+          <ResearchPaper />
         </section>
         ) : null}
 
@@ -6314,16 +5574,22 @@ export default function App() {
             >
               Donate
             </a>
+            <span className="legal-separator">•</span>
+            <button type="button" className="logs-toggle-btn" onClick={() => setLogsOpen(!logsOpen)}>
+              {logsOpen ? "Close logs" : "Logs"}
+            </button>
           </div>
           <div className="legal-row">
             <span>Copyright (c) 2026 Cosmin Trica</span>
           </div>
         </footer>
+        <LogsPanel open={logsOpen} onClose={() => setLogsOpen(false)} />
         <ComputeBudgetRail
           computeProfile={computeProfile}
           quickForms={quickForms}
           updateQuickForm={updateQuickForm}
           handleSubmit={handleComputeProfileSubmit}
+          handleToggleContinuous={handleToggleContinuous}
           actionState={actionState}
           effectiveCpuBudget={effectiveCpuBudget}
           effectiveGpuBudget={effectiveGpuBudget}

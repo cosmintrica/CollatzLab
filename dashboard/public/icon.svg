@@ -1,42 +1,65 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" fill="none">
+  <title>Collatz Lab - computational verification, orbit toward unity</title>
   <defs>
-    <linearGradient id="bg" x1="64" y1="56" x2="432" y2="456" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#FFF8EE"/>
-      <stop offset="1" stop-color="#EBD9BA"/>
+    <radialGradient id="icon-rad" cx="28%" cy="22%" r="78%" gradientUnits="objectBoundingBox">
+      <stop stop-color="#FFFCF8"/>
+      <stop offset="0.35" stop-color="#FAF3E6"/>
+      <stop offset="0.7" stop-color="#EDD9BA"/>
+      <stop offset="1" stop-color="#D4BC8E"/>
+    </radialGradient>
+    <linearGradient id="icon-frame" x1="64" y1="64" x2="448" y2="448" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#E8D4AE"/>
+      <stop offset="1" stop-color="#B8894A"/>
     </linearGradient>
-    <linearGradient id="panel" x1="108" y1="118" x2="398" y2="404" gradientUnits="userSpaceOnUse">
+    <linearGradient id="icon-orbit" x1="72" y1="368" x2="420" y2="112" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#E8A04A"/>
+      <stop offset="0.35" stop-color="#C76E1F"/>
+      <stop offset="0.7" stop-color="#A15B17"/>
+      <stop offset="1" stop-color="#5A320C"/>
+    </linearGradient>
+    <linearGradient id="icon-panel" x1="96" y1="96" x2="416" y2="416" gradientUnits="userSpaceOnUse">
       <stop stop-color="#FFFDF9"/>
-      <stop offset="1" stop-color="#F5E9D3"/>
+      <stop offset="1" stop-color="#F2E6D0"/>
     </linearGradient>
-    <linearGradient id="accent" x1="146" y1="128" x2="336" y2="334" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#D78631"/>
-      <stop offset="1" stop-color="#8A4611"/>
-    </linearGradient>
-    <filter id="glow" x="96" y="96" width="320" height="320" filterUnits="userSpaceOnUse">
-      <feGaussianBlur stdDeviation="18"/>
+    <filter id="icon-glow" x="-8%" y="-8%" width="116%" height="116%" filterUnits="userSpaceOnUse">
+      <feGaussianBlur stdDeviation="14" result="g"/>
+      <feColorMatrix in="g" type="matrix"
+        values="1 0 0 0 0  0 0.85 0 0 0  0 0 0.5 0 0  0 0 0 0.45 0" result="gc"/>
     </filter>
   </defs>
 
-  <rect width="512" height="512" rx="128" fill="url(#bg)"/>
-  <rect x="12" y="12" width="488" height="488" rx="116" stroke="#D5B480" stroke-width="24" stroke-opacity=".72"/>
+  <rect width="512" height="512" rx="118" fill="url(#icon-rad)"/>
+  <rect x="10" y="10" width="492" height="492" rx="108" stroke="url(#icon-frame)" stroke-width="10" stroke-opacity="0.65"/>
 
-  <path d="M96 112H416M96 176H416M96 240H416M96 304H416M96 368H416M96 432H416M112 96V416M176 96V416M240 96V416M304 96V416M368 96V416M432 96V416" stroke="#B98C4C" stroke-opacity=".11" stroke-width="8"/>
-
-  <g filter="url(#glow)" opacity=".16">
-    <circle cx="256" cy="264" r="108" fill="#D07E2A"/>
+  <g opacity="0.09" stroke="#7A5230" stroke-width="5" stroke-linecap="round">
+    <path d="M96 128H416M96 208H416M96 288H416M96 368H416"/>
+    <path d="M128 96V416M208 96V288M288 96V416M368 96V416"/>
   </g>
 
-  <rect x="110" y="110" width="292" height="292" rx="72" fill="url(#panel)" stroke="#D7B178" stroke-width="10"/>
+  <rect x="72" y="72" width="368" height="368" rx="88" fill="url(#icon-panel)" stroke="#D1B78A" stroke-width="6"/>
 
-  <rect x="152" y="144" width="58" height="58" rx="18" fill="url(#accent)"/>
-  <rect x="224" y="144" width="58" height="58" rx="18" fill="#FFF9F0" stroke="#D6B078" stroke-width="5"/>
-  <rect x="152" y="216" width="58" height="58" rx="18" fill="#FFF9F0" stroke="#D6B078" stroke-width="5"/>
-  <rect x="152" y="288" width="58" height="58" rx="18" fill="#FFF9F0" stroke="#D6B078" stroke-width="5"/>
-  <rect x="224" y="288" width="58" height="58" rx="18" fill="#FFF9F0" stroke="#D6B078" stroke-width="5"/>
+  <g opacity="0.22" filter="url(#icon-glow)">
+    <path
+      d="M 80 328 C 96 176 152 96 240 144 C 304 180 352 112 432 176 C 472 224 448 320 368 368 C 332 388 280 372 228 340 C 200 318 205 285 256 256"
+      fill="none"
+      stroke="#D4893A"
+      stroke-width="36"
+      stroke-linecap="round"
+      stroke-linejoin="round"/>
+  </g>
 
-  <path d="M318 176H352C374.091 176 392 193.909 392 216V274C392 296.091 374.091 314 352 314H318" stroke="#8A4611" stroke-width="18" stroke-linecap="round"/>
-  <circle cx="294" cy="245" r="21" fill="#D78631"/>
+  <path
+    d="M 80 328 C 96 176 152 96 240 144 C 304 180 352 112 432 176 C 472 224 448 320 368 368 C 332 388 280 372 228 340 C 200 318 205 285 256 256"
+    fill="none"
+    stroke="url(#icon-orbit)"
+    stroke-width="20"
+    stroke-linecap="round"
+    stroke-linejoin="round"/>
 
-  <rect x="120" y="386" width="272" height="32" rx="16" fill="#F5E6CB" stroke="#D8B57F" stroke-width="4"/>
-  <path d="M162 402H352" stroke="#A5611E" stroke-width="4" stroke-linecap="round" stroke-dasharray="1 14"/>
+  <circle cx="80" cy="328" r="28" fill="#4A2808" stroke="#F0E0C4" stroke-width="6"/>
+  <circle cx="256" cy="256" r="32" fill="#FFF9F0" stroke="#A15B17" stroke-width="7"/>
+  <circle cx="256" cy="256" r="10" fill="#C76E1F" opacity="0.35"/>
+
+  <circle cx="240" cy="144" r="12" fill="#D4893A" opacity="0.85"/>
+  <circle cx="368" cy="368" r="9" fill="#8B5220" opacity="0.5"/>
 </svg>

@@ -41,6 +41,9 @@ reports/
 # Local accidental mirrors / generated workspace copies
 backend/research/
 
+# Cursor / local IDE
+.cursor/
+
 # OS / editor noise
 Thumbs.db
 .DS_Store

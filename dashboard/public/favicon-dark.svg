@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none">
+  <title>Collatz Lab - hailstone path toward 1 (dark)</title>
+  <defs>
+    <linearGradient id="fdb" x1="6" y1="4" x2="58" y2="62" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#1f1914"/>
+      <stop offset="0.5" stop-color="#241e18"/>
+      <stop offset="1" stop-color="#2e261e"/>
+    </linearGradient>
+    <linearGradient id="fdo" x1="8" y1="46" x2="54" y2="14" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#f0b575"/>
+      <stop offset="0.45" stop-color="#d4893a"/>
+      <stop offset="1" stop-color="#7a4a1a"/>
+    </linearGradient>
+  </defs>
+  <rect width="64" height="64" rx="15" fill="url(#fdb)"/>
+  <rect x="1.25" y="1.25" width="61.5" height="61.5" rx="14" stroke="#d4893a" stroke-opacity="0.35" stroke-width="1.25"/>
+  <path
+    d="M 10 41 C 12 22 20 14 30 18 C 38 21 44 12 54 22 C 59 28 56 40 46 46 C 41.5 48.5 35 46.5 28.5 42.5 C 25 40 26 36 32 32"
+    fill="none"
+    stroke="url(#fdo)"
+    stroke-width="3.25"
+    stroke-linecap="round"
+    stroke-linejoin="round"/>
+  <circle cx="10" cy="41" r="3" fill="#0d0a08" stroke="#d4893a" stroke-width="0.75"/>
+  <circle cx="32" cy="32" r="3.6" fill="#1a1612" stroke="#ffffff" stroke-width="0.85"/>
+</svg>
