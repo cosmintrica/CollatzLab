@@ -291,6 +291,7 @@ def _detect_nvidia_gpus() -> list[HardwareCapability]:
         return []
 
     diagnostics = gpu_execution_diagnostics()
+    runtime_ready = gpu_execution_ready()
     runtime_metrics = _nvidia_runtime_metrics()
     capabilities: list[HardwareCapability] = []
     for line in output.splitlines():
@@ -306,13 +307,13 @@ def _detect_nvidia_gpus() -> list[HardwareCapability]:
                 label=name,
                 available=True,
                 supported_hardware=["gpu"],
-                supported_kernels=[GPU_KERNEL, GPU_SIEVE_KERNEL] if diagnostics["ready"] else [],
+                supported_kernels=[GPU_KERNEL, GPU_SIEVE_KERNEL] if runtime_ready else [],
                 metadata={
                     "vendor": "nvidia",
                     "index": index,
                     "memory_mib": int(memory_mib),
                     "driver_version": driver_version,
-                    "execution_ready": diagnostics["ready"],
+                    "execution_ready": runtime_ready,
                     "diagnostic": diagnostics["reason"],
                     "cuda_home": diagnostics["cuda_home"],
                     **live_metrics,
