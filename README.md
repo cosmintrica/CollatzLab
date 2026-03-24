@@ -35,14 +35,16 @@ The goal is to support several research activities in one place:
 - **Compute budget** rail: start/stop continuous compute, sliders for whole-system / CPU / GPU lanes, apply to backend profile
 - **Active runs** strip with progress, throughput hints, and checkpoint status
 - **System logs** panel: search, level/source filters, refresh (worker log tail + failed-run summaries)
-- **Run rail**, **Reddit intel rail** (r/Collatz intake, not auto-trusted), **live math** navigator / ticker / orbit UI, **research paper** page (KaTeX, `research/paper.json`)
+- **Run rail**, **Reddit intel rail** (r/Collatz intake, not auto-trusted), **live math** navigator / ticker / orbit UI, **research paper** page (KaTeX; `research/paper.json` is generated locally and gitignored)
 - Configurable API base via `VITE_API_BASE_URL` for hosted frontends
 
 **Data & research**
 
-- SQLite under `data/` for runs, workers, claims, sources, compute profile, runtime settings
-- `research/`: roadmap, claim markdown files, paper metadata, incident/LLM notes as applicable
-- Generated outputs: `artifacts/`, `reports/` (gitignored by default for local runs)
+- SQLite under `data/` for runs, workers, claims, sources, compute profile, runtime settings (**never committed**)
+- `research/`: shared markdown (roadmap, backlog, etc.); exported per-claim notes live under `research/claims/` (**local only**, gitignored)
+- Generated outputs: `artifacts/`, `reports/` (gitignored)
+
+**Git pull and your local DB / history:** see [`docs/LOCAL_WORKSPACE_AND_GIT.md`](docs/LOCAL_WORKSPACE_AND_GIT.md) — ignored paths are not overwritten by `git pull`.
 
 **Tooling**
 
@@ -67,7 +69,7 @@ This repo treats the problem conservatively:
 
 - `backend/`: Python package, CLI, API, services, worker loop, tests
 - `dashboard/`: Vite + React UI (`npm` lifecycle inside this folder)
-- `research/`: roadmap, direction notes, claim documents, paper JSON
+- `research/`: roadmap and direction notes (tracked); `research/claims/` and `research/paper.json` are local exports (gitignored)
 - `artifacts/`: generated JSON, Markdown, and evidence outputs
 - `reports/`: generated lab reports
 - `data/`: SQLite database and runtime state (local)

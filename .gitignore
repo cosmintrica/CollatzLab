@@ -23,6 +23,7 @@ dashboard/dist/
 # Runtime / logs
 .runtime/
 *.log
+data/logs/
 
 # Local databases
 data/*.db
