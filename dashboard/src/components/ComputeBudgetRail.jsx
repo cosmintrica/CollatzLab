@@ -8,14 +8,15 @@ export default memo(function ComputeBudgetRail({
   handleToggleContinuous,
   actionState,
   effectiveCpuBudget,
-  effectiveGpuBudget
+  effectiveGpuBudget,
+  showMacGpuBudgetHint
 }) {
   const isRunning = computeProfile.continuous_enabled !== false;
   const pendingToggle = actionState.pendingKey === "toggle continuous";
   const pendingProfile = actionState.pendingKey === "compute profile";
 
   return (
-    <aside className="workspace-rail workspace-rail-left">
+    <aside id="collatz-compute-rail" className="workspace-rail workspace-rail-left">
       <div className="compute-control-panel compute-control-panel-docked">
         <div className="compute-control-header">
           <span className="sidebar-kicker">Compute budget</span>
@@ -33,8 +34,8 @@ export default memo(function ComputeBudgetRail({
           </button>
           <p className="sidebar-note">
             {isRunning
-              ? "Continuous compute is running. Workers queue runs automatically."
-              : "Compute is paused. Current run finishes, then workers go idle."}
+              ? "Continuous compute is running. Workers queue runs automatically (driven by the API host)."
+              : "Compute is paused: no new autopilot verification streams are queued. Finish or cancel any in-flight run, then press Start — otherwise the worker sits idle after the queue drains."}
           </p>
         </div>
 
@@ -75,6 +76,13 @@ export default memo(function ComputeBudgetRail({
               onChange={(event) => updateQuickForm("computeGpuPercent", event.target.value)}
             />
           </label>
+          {showMacGpuBudgetHint ? (
+            <p className="sidebar-note compute-macos-gpu-hint" role="note">
+              <strong>macOS:</strong> GPU runs (MPS/Metal) share unified memory with the CPU and the desktop compositor.
+              A non-zero GPU lane can make the whole Mac feel slow. New installs default the GPU lane to 0% — raise it
+              when you want <code>gpu-sieve</code> / GPU workers; keep CPU-only for a responsive UI.
+            </p>
+          ) : null}
           <p className="sidebar-note compute-budget-note">
             Effective now: CPU {effectiveCpuBudget}% · GPU {effectiveGpuBudget}%.
           </p>

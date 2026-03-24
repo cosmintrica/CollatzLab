@@ -14,7 +14,7 @@ Rules:
 
 0. Immediate next after hosting pass
 - keep continuous chained runs alive longer so `LIVE NOW` stays visible more often;
-- refactor `hardware.py` into platform adapters for Windows/Linux/macOS and x86_64/ARM64 (see [`HARDWARE_AND_KERNELS.md`](./HARDWARE_AND_KERNELS.md) for the full platform matrix and phased plan);
+- extend `collatz_lab/hardware/` with platform adapters for Windows/Linux/macOS and x86_64/ARM64 (see [`HARDWARE_AND_KERNELS.md`](./HARDWARE_AND_KERNELS.md) for the full platform matrix and phased plan);
 - sketch a distributed coordinator backend so remote workers can contribute compute and centralize evidence.
 
 1. Worker queue and hardware-aware execution
@@ -58,6 +58,7 @@ Rules:
 - preserve a separate Vite mode for development.
 
 8. Cross-platform execution and hardware detection
+- **Do not regress the baseline:** read [`KERNEL_PORTABILITY_GUARDRAILS.md`](./KERNEL_PORTABILITY_GUARDRAILS.md) before changing kernels, CUDA paths, or `collatz_lab.hardware` dispatch (Windows x86_64 + AMD CPU + NVIDIA GPU is the current primary bar).
 - **Canonical plan:** [`HARDWARE_AND_KERNELS.md`](./HARDWARE_AND_KERNELS.md) — CPUs (x86_64 Intel/AMD, Apple Silicon, Windows ARM e.g. Snapdragon X, Linux ARM64), GPUs (NVIDIA CUDA today; AMD ROCm, Intel oneAPI/SYCL, Apple Metal, Qualcomm Adreno as future research), integrated vs dedicated, macOS/Windows/Linux matrix.
 - split hardware discovery into backend adapters for Windows, Linux, and macOS;
 - support CPU-first execution everywhere, with GPU backends added per platform rather than hardcoding NVIDIA/Windows assumptions;
@@ -81,6 +82,13 @@ Rules:
   - public dashboard
   - maintainer-owned coordinator API/database
   - contributor-run local worker agents
+- **Technical blueprint (monorepo, two UI shells):** [`research/UI_SURFACE_AND_MONOREPO_PLAN.md`](./UI_SURFACE_AND_MONOREPO_PLAN.md) — `VITE_COLLATZ_UI_SHELL=public|worker`, tab/feature matrix (worker shell excludes Paper, Community/Reddit), phased build + future API token scopes.
+
+11. Worker vs public dashboard (UI)
+- implement Phase W1: env-driven shell, filter `tabs` and feature flags so worker build omits Paper, Community, Reddit rails;
+- document `npm run build` variants in `dashboard/README.md`;
+- add a small test or assertion on allowed tab ids for `worker` shell;
+- later: coordinator `worker` role cannot call social/LLM endpoints (server-side), not UI-only.
 
 ## Definition of Done for One Autonomous Run
 

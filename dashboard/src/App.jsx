@@ -14,7 +14,7 @@ import {
   runRangeMagnitudeLatex, runMilestoneLabelLatex,
   extractFailureReason, describeRunPurpose, describeRunStatusDetail, classifyRunCategory,
   parseClaimNotes, appendCsvTag, rubricValueToSelect, selectToRubricValue,
-  countBy, taskIntent, formatMathNum
+  countBy, taskIntent, formatMathNum, parsePromisingFollowupDescription
 } from "./utils.js";
 import {
   StatusPill, SummaryCard, SectionIntro, MathNum, Legend, EmptyState,
@@ -22,19 +22,60 @@ import {
 } from "./components/ui.jsx";
 import MathTicker from "./components/MathTicker.jsx";
 import LiveMathNavigator from "./components/LiveMathNavigator.jsx";
+import LiveExecutionHint from "./components/LiveExecutionHint.jsx";
 import RunRail from "./components/RunRail.jsx";
 import RedditIntelRail from "./components/RedditIntelRail.jsx";
 import ComputeBudgetRail from "./components/ComputeBudgetRail.jsx";
 import ResearchPaper from "./components/ResearchPaper.jsx";
 import LogsPanel from "./components/LogsPanel.jsx";
+import BenchmarkPanel from "./components/BenchmarkPanel.jsx";
 import {
   firstPositiveInteger, buildOrbit, twoAdicValuation, nextCollatzValue,
   orbitStats, buildMathTrace, summarizeMetric, buildMetricSummary,
-  buildRecordTape, runProgress, runLiveDetails, describeCapability,
+  buildRecordTape, runProgress, runLiveDetails, runTimingMicroSuffix, describeCapability,
   orbitSeedFromRun, orbitSeedLabel, describeOrbitSeed
 } from "./orbitCalc.js";
 
+/** Detect real list changes even when length + first/last ids stay the same (poll merge). */
+function pollEntitySignature(items, pick) {
+  if (!Array.isArray(items) || items.length === 0) {
+    return "";
+  }
+  return [...items].map((x) => pick(x)).sort().join("\u001e");
+}
 
+function pollIdStatusUpdated(items) {
+  return pollEntitySignature(items, (x) => `${x.id}:${x.status ?? ""}:${x.updated_at ?? ""}`);
+}
+
+function pollWorkerSignature(workers) {
+  return pollEntitySignature(workers || [], (w) =>
+    `${w.id}:${w.status ?? ""}:${w.current_run_id ?? ""}:${w.last_heartbeat_at ?? w.updated_at ?? ""}`
+  );
+}
+
+function pollArtifactSignature(artifacts) {
+  return pollEntitySignature(artifacts || [], (a) => `${a.id}:${a.updated_at ?? ""}:${a.claim_id ?? ""}`);
+}
+
+function pollSourceSignature(sources) {
+  return pollEntitySignature(sources || [], (s) => `${s.id}:${s.review_status ?? ""}:${s.updated_at ?? ""}`);
+}
+
+function pollDirectionSignature(directions) {
+  return pollEntitySignature(directions || [], (d) => `${d.slug}:${d.status ?? ""}:${d.score ?? ""}`);
+}
+
+function pollClaimLinkSignature(links) {
+  return pollEntitySignature(links || [], (l) => `${l.claim_id}:${l.run_id}:${l.relation}`);
+}
+
+function pollSummarySignature(summary) {
+  if (!summary || typeof summary !== "object") {
+    return "";
+  }
+  return JSON.stringify(summary);
+}
 
 const initialState = {
   summary: null,
@@ -50,7 +91,7 @@ const initialState = {
   fallacyTags: [],
   llmStatus: null,
   autopilotStatus: null,
-  feed: null,
+  redditFeed: null,
   hardware: [],
   workers: [],
   computeProfile: { continuous_enabled: true, system_percent: 100, cpu_percent: 100, gpu_percent: 100, updated_at: null },
@@ -669,7 +710,7 @@ function ActionField({ label, wide = false, children }) {
   );
 }
 
-function OrbitPanel({ run, worker, frameIndex, onSelectRun, runs, expanded = false, showSelector = true, sectionId }) {
+function OrbitPanel({ run, worker, frameIndex, onSelectRun, runs, expanded = false, showSelector = true, sectionId, speedPollRef }) {
   const orbitSeed = run ? orbitSeedFromRun(run) : 1;
   const orbit = run ? buildOrbit(orbitSeed, 16) : [];
   const safeFrameIndex = orbit.length > 0 ? Math.min(frameIndex, orbit.length - 1) : 0;
@@ -724,7 +765,10 @@ function OrbitPanel({ run, worker, frameIndex, onSelectRun, runs, expanded = fal
               <span>{run.kernel}</span>
               <span>{run.hardware}</span>
               <span>{run.status}</span>
-              <span className="ts-micro">{formatCompactTimestamp(run.finished_at || run.started_at || run.created_at)}</span>
+              <span className="ts-micro" title={run.started_at && run.finished_at ? `Started ${run.started_at} · Finished ${run.finished_at}` : run.started_at ? `Started ${run.started_at}` : ""}>
+                {formatCompactTimestamp(run.finished_at || run.started_at || run.created_at)}
+                {runTimingMicroSuffix(run, { pollRef: speedPollRef })}
+              </span>
             </div>
           </div>
           <div className="math-operator-banner">
@@ -929,6 +973,7 @@ export default function App() {
   const [tracksView, setTracksView] = useState("overview");
   const [guideView, setGuideView] = useState("start");
   const [refreshNonce, setRefreshNonce] = useState(0);
+  const liveSpeedPollRef = useRef({});
   const computeSlidersDirty = useRef(false);
   const [selectedEvidence, setSelectedEvidence] = useState({ kind: "", id: "" });
   const [artifactPreviews, setArtifactPreviews] = useState({});
@@ -1028,8 +1073,37 @@ export default function App() {
   const [llmDraft, setLlmDraft] = useState(null);
   const [autopilotResult, setAutopilotResult] = useState(null);
   const [probeResult, setProbeResult] = useState(null);
+  const [batteryStabilityReport, setBatteryStabilityReport] = useState(null);
+  const [batteryStabilityPersist, setBatteryStabilityPersist] = useState(false);
   const [navOpen, setNavOpen] = useState(false);
+  const [computeRailOpen, setComputeRailOpen] = useState(false);
+  const [redditRailOpen, setRedditRailOpen] = useState(false);
   const [orbitRunId, setOrbitRunId] = useState("");
+
+  useEffect(() => {
+    const mq = window.matchMedia("(min-width: 1480px)");
+    const onViewport = () => {
+      if (mq.matches) {
+        setComputeRailOpen(false);
+        setRedditRailOpen(false);
+      }
+    };
+    onViewport();
+    mq.addEventListener("change", onViewport);
+    return () => mq.removeEventListener("change", onViewport);
+  }, []);
+
+  useEffect(() => {
+    if (!computeRailOpen && !redditRailOpen) return undefined;
+    const onKey = (event) => {
+      if (event.key === "Escape") {
+        setComputeRailOpen(false);
+        setRedditRailOpen(false);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [computeRailOpen, redditRailOpen]);
   const [orbitFrame, setOrbitFrame] = useState(0);
   const [cpuPressure, setCpuPressure] = useState(null);
   const [state, setState] = useState(initialState);
@@ -1047,7 +1121,7 @@ export default function App() {
           readJson(endpoints.tasks),
           readJson(endpoints.runs),
           readJson(endpoints.claims),
-          readOptionalJson(endpoints.hypotheses),
+          readJson(endpoints.hypotheses),
           readOptionalJson(endpoints.claimRunLinks),
           readJson(endpoints.sources),
           readJson(endpoints.artifacts),
@@ -1087,20 +1161,37 @@ export default function App() {
         };
         startTransition(() => {
           setState((prev) => {
-            // Skip update if core data arrays haven't changed (same lengths + same first IDs)
-            const same = (a, b) => Array.isArray(a) && Array.isArray(b) && a.length === b.length && a[0]?.id === b[0]?.id && a[a.length-1]?.id === b[b.length-1]?.id;
-            const coreUnchanged = same(prev.runs, next.runs) && same(prev.claims, next.claims)
-              && same(prev.tasks, next.tasks) && same(prev.sources, next.sources)
-              && same(prev.artifacts, next.artifacts) && same(prev.workers, next.workers);
-            if (coreUnchanged) {
-              // Still update metrics/checkpoint for running runs
-              const anyRunningChanged = next.runs.some((r, i) => {
-                const p = prev.runs[i];
-                return r.status !== p?.status || r.checkpoint_json !== p?.checkpoint_json
-                  || JSON.stringify(r.checkpoint) !== JSON.stringify(p?.checkpoint)
-                  || JSON.stringify(r.metrics) !== JSON.stringify(p?.metrics);
-              });
-              if (!anyRunningChanged) return prev; // no-op, skip re-render
+            // Skip full replace only when nothing material changed (avoid stale UI from first/last-id heuristic).
+            const runsLiveDirty = next.runs.some((r, i) => {
+              const p = prev.runs[i];
+              return (
+                r.status !== p?.status ||
+                r.checkpoint_json !== p?.checkpoint_json ||
+                JSON.stringify(r.checkpoint) !== JSON.stringify(p?.checkpoint) ||
+                JSON.stringify(r.metrics) !== JSON.stringify(p?.metrics)
+              );
+            });
+            const dataQuiet =
+              pollIdStatusUpdated(prev.tasks) === pollIdStatusUpdated(next.tasks) &&
+              pollIdStatusUpdated(prev.hypotheses) === pollIdStatusUpdated(next.hypotheses) &&
+              pollIdStatusUpdated(prev.claims) === pollIdStatusUpdated(next.claims) &&
+              pollIdStatusUpdated(prev.runs) === pollIdStatusUpdated(next.runs) &&
+              pollArtifactSignature(prev.artifacts) === pollArtifactSignature(next.artifacts) &&
+              pollSourceSignature(prev.sources) === pollSourceSignature(next.sources) &&
+              pollWorkerSignature(prev.workers) === pollWorkerSignature(next.workers) &&
+              pollDirectionSignature(prev.directions) === pollDirectionSignature(next.directions) &&
+              pollClaimLinkSignature(prev.claimRunLinks) === pollClaimLinkSignature(next.claimRunLinks) &&
+              pollSummarySignature(prev.summary) === pollSummarySignature(next.summary);
+            const peripheralQuiet =
+              JSON.stringify(prev.llmStatus) === JSON.stringify(next.llmStatus) &&
+              JSON.stringify(prev.autopilotStatus) === JSON.stringify(next.autopilotStatus) &&
+              JSON.stringify(prev.baseline) === JSON.stringify(next.baseline) &&
+              JSON.stringify(prev.computeProfile) === JSON.stringify(next.computeProfile) &&
+              JSON.stringify(prev.redditFeed) === JSON.stringify(next.redditFeed) &&
+              JSON.stringify(prev.fallacyTags) === JSON.stringify(next.fallacyTags) &&
+              JSON.stringify(prev.hardware) === JSON.stringify(next.hardware);
+            if (dataQuiet && peripheralQuiet && !runsLiveDirty) {
+              return prev;
             }
             return next;
           });
@@ -1374,6 +1465,13 @@ export default function App() {
       )
     );
   }), [state.tasks, deferredFilters.taskQuery, deferredFilters.taskStatus]);
+  const sandboxPromisingFollowupTasks = useMemo(
+    () =>
+      state.tasks.filter((task) =>
+        String(task.description || "").includes("[sandbox-promising-followup]")
+      ),
+    [state.tasks]
+  );
   const latestRunId = state.runs[0]?.id || "none";
   const { computeBacklogTasks, theoryBacklogTasks, groupedTasksByDirection, groupedComputeTasksByDirection, groupedTheoryTasksByDirection } = useMemo(() => {
     const compute = filteredTasks.filter((task) => taskIntent(task) === "compute");
@@ -1408,9 +1506,23 @@ export default function App() {
   const cpuCapability =
     hardwareInventory.find((item) => normalize(item.kind) === "cpu") ||
     hardwareInventory.find((item) => normalize(item.slug).includes("cpu"));
+  const gpuExecutableCapability = hardwareInventory.find(
+    (item) =>
+      normalize(item.kind) === "gpu" &&
+      Array.isArray(item.supported_kernels) &&
+      item.supported_kernels.length > 0
+  );
   const gpuCapability =
+    gpuExecutableCapability ||
     hardwareInventory.find((item) => normalize(item.kind) === "gpu") ||
     hardwareInventory.find((item) => normalize(item.slug).includes("gpu"));
+  const apiHostSummary = (() => {
+    const host = cpuCapability?.metadata?.host;
+    if (!host || typeof host !== "object") {
+      return null;
+    }
+    return [host.os, host.machine].filter(Boolean).join(" · ") || null;
+  })();
   const selectedRunIsLive = selectedOrbitRun?.status === "running";
   const anyLiveRun = runningRuns > 0;
   const liveRunOptions = runningRunOptions.length > 0 ? runningRunOptions.slice(0, 8) : state.runs.slice(0, 8);
@@ -1422,6 +1534,16 @@ export default function App() {
     ...runningRunOptions,
     ...state.runs.filter((run) => run.status !== "running")
   ].slice(0, 10);
+  const hostOsRaw = cpuCapability?.metadata?.host?.os;
+  const isDarwinHost =
+    typeof hostOsRaw === "string" && hostOsRaw.toLowerCase().includes("darwin");
+  const showMacGpuBudgetHint = isDarwinHost && Boolean(gpuExecutableCapability);
+  const gpuUsageUnavailableMac =
+    gpuCapability?.metadata?.gpu_usage_probe === "unavailable_macos" ||
+    (isDarwinHost &&
+      gpuCapability?.metadata?.usage_percent == null &&
+      Array.isArray(gpuCapability?.supported_kernels) &&
+      gpuCapability.supported_kernels.length > 0);
   const cpuNowLabel =
     cpuCapability?.metadata?.usage_percent != null
       ? `${cpuCapability.metadata.usage_percent.toFixed(1)}%`
@@ -1431,9 +1553,11 @@ export default function App() {
   const gpuNowLabel =
     gpuCapability?.metadata?.usage_percent != null
       ? `${gpuCapability.metadata.usage_percent.toFixed(1)}%`
-      : gpuCapability
-        ? "visible"
-        : "n/a";
+      : gpuUsageUnavailableMac
+        ? "see Activity Monitor"
+        : gpuCapability
+          ? "n/a"
+          : "n/a";
   const selectedEvidenceRun =
     selectedEvidence.kind === "run"
       ? state.runs.find((run) => run.id === selectedEvidence.id) || null
@@ -1625,10 +1749,10 @@ export default function App() {
     { id: "backlog", label: "Task split", count: filteredTasks.length, note: "Separate compute backlog from theory backlog." }
   ];
   const guideViews = [
-    { id: "start", label: "Start", note: "What the app is and how to read it." },
-    { id: "roles", label: "Roles", note: "Compute, theory, validation, integration." },
-    { id: "validation", label: "Validation", note: "What counts as evidence and what does not." },
-    { id: "llm", label: "LLM", note: "How Gemini is used safely here." }
+    { id: "start", label: "Start", note: "Tabs, lanes, IDs, Benchmark vs browser." },
+    { id: "roles", label: "Roles", note: "Agents, workers, reading order." },
+    { id: "validation", label: "Validation", note: "Evidence, kernels, baseline." },
+    { id: "llm", label: "LLM", note: "Gemini scope and autopilot." }
   ];
   const operationsViewMeta = {
     compute: {
@@ -1649,7 +1773,7 @@ export default function App() {
     },
     backlog: {
       title: "Research backlog",
-      text: "Create the next tasks, then scan the open queue before starting more compute."
+      text: "Create the next tasks, then scan the open queue before starting more compute. Automated sandbox follow-ups for PROMISING claims are created here (not under Compute)."
     }
   };
   const activeOperationsMeta = operationsViewMeta[operationsView];
@@ -1927,6 +2051,15 @@ export default function App() {
     }
   }
 
+  function goToSandboxClaimReview(claimId) {
+    if (!claimId) {
+      return;
+    }
+    setActiveTab("evidence");
+    updateFilter("claimFamily", "hypothesis");
+    openEvidence("claim", claimId);
+  }
+
   async function previewArtifact(artifactId) {
     setPreviewArtifactId(artifactId);
     if (artifactPreviews[artifactId]) {
@@ -2031,7 +2164,9 @@ export default function App() {
             ? `${actionKey} created tasks ${result.applied_task_ids.join(", ")}.`
             : result?.id
               ? `${actionKey} saved as ${result.id}.`
-              : `${actionKey} completed successfully.`
+              : actionKey === "hypothesis battery" && Array.isArray(result) && result.length > 0
+                ? `${actionKey} completed (${result.length} probes persisted to hypothesis-sandbox).`
+                : `${actionKey} completed successfully.`
       });
       setRefreshNonce((current) => current + 1);
       return result;
@@ -2129,6 +2264,38 @@ export default function App() {
         }),
       () => {
         setSelectedEvidence({ kind: "claim", id: quickForms.linkClaimId });
+      }
+    );
+  }
+
+  async function handleHypothesisBatterySubmit(event) {
+    event.preventDefault();
+    await runAction(
+      "hypothesis battery",
+      () => postJson(endpoints.hypothesisBattery, { end: 50_000 }, 300_000),
+      () => {
+        setSelectedEvidence({ kind: "claim", id: null });
+      }
+    );
+  }
+
+  async function handleHypothesisBatteryStabilitySubmit(event) {
+    event.preventDefault();
+    await runAction(
+      "battery stability",
+      () =>
+        postJson(
+          endpoints.hypothesisBatteryStability,
+          {
+            endpoints: [50_000, 200_000, 1_000_000],
+            glide_sample_cap: 8000,
+            stratified_bin_count: 8,
+            persist: batteryStabilityPersist
+          },
+          600_000
+        ),
+      (result) => {
+        setBatteryStabilityReport(result);
       }
     );
   }
@@ -2410,8 +2577,50 @@ export default function App() {
     );
   }
 
+  const toggleComputeRail = useCallback(() => {
+    setComputeRailOpen((prev) => {
+      const next = !prev;
+      if (next) setRedditRailOpen(false);
+      return next;
+    });
+  }, []);
+
+  const toggleRedditRail = useCallback(() => {
+    setRedditRailOpen((prev) => {
+      const next = !prev;
+      if (next) setComputeRailOpen(false);
+      return next;
+    });
+  }, []);
+
+  const closeRailPanels = useCallback(() => {
+    setComputeRailOpen(false);
+    setRedditRailOpen(false);
+  }, []);
+
+  const mainShellClass = [
+    "page-shell",
+    "app-shell",
+    navOpen && "nav-open",
+    computeRailOpen && "compute-rail-open",
+    redditRailOpen && "reddit-rail-open"
+  ]
+    .filter(Boolean)
+    .join(" ");
+
   return (
-    <main className={navOpen ? "page-shell app-shell nav-open" : "page-shell app-shell"}>
+    <main className={mainShellClass}>
+      <ComputeBudgetRail
+        computeProfile={computeProfile}
+        quickForms={quickForms}
+        updateQuickForm={updateQuickForm}
+        handleSubmit={handleComputeProfileSubmit}
+        handleToggleContinuous={handleToggleContinuous}
+        actionState={actionState}
+        effectiveCpuBudget={effectiveCpuBudget}
+        effectiveGpuBudget={effectiveGpuBudget}
+        showMacGpuBudgetHint={showMacGpuBudgetHint}
+      />
       <aside className="sidebar" aria-label="Dashboard navigation">
         <div className="sidebar-brand">
           <div className="brand-lockup">
@@ -2472,7 +2681,9 @@ export default function App() {
               <strong>{queuedRuns}</strong>
             </article>
           </div>
-          <p className="sidebar-note">Live machine usage and queue pressure from the local lab.</p>
+          <p className="sidebar-note">
+            Live machine usage and queue pressure from the local lab.
+          </p>
         </div>
         <nav className="sidebar-nav" aria-label="Dashboard sections">
           {tabs.map((tab) => (
@@ -2537,6 +2748,13 @@ export default function App() {
               onChange={(event) => updateQuickForm("computeGpuPercent", event.target.value)}
             />
           </label>
+          {showMacGpuBudgetHint ? (
+            <p className="sidebar-note compute-macos-gpu-hint" role="note">
+              <strong>macOS:</strong> GPU runs (MPS/Metal) share unified memory with the CPU and the desktop compositor.
+              A non-zero GPU lane can make the whole Mac feel slow. New installs default the GPU lane to 0% — raise it
+              when you want <code>gpu-sieve</code> / GPU workers; keep CPU-only for a responsive UI.
+            </p>
+          ) : null}
           <p className="sidebar-note">
             Effective budgets now: CPU {effectiveCpuBudget}% and GPU {effectiveGpuBudget}%. These sliders throttle future batches and new maintenance runs.
           </p>
@@ -2571,6 +2789,34 @@ export default function App() {
       </aside>
       {navOpen ? <button type="button" className="nav-backdrop" aria-label="Close navigation" onClick={() => setNavOpen(false)} /> : null}
       <div className="main-column">
+        {(computeRailOpen || redditRailOpen) ? (
+          <button
+            type="button"
+            className="rail-panel-backdrop"
+            aria-label="Close side panel"
+            onClick={closeRailPanels}
+          />
+        ) : null}
+        <div className="rail-toggle-strip" role="toolbar" aria-label="Side panels">
+          <button
+            type="button"
+            className={`secondary-button rail-toggle-btn${computeRailOpen ? " active" : ""}`}
+            aria-expanded={computeRailOpen}
+            aria-controls="collatz-compute-rail"
+            onClick={toggleComputeRail}
+          >
+            Compute
+          </button>
+          <button
+            type="button"
+            className={`secondary-button rail-toggle-btn${redditRailOpen ? " active" : ""}`}
+            aria-expanded={redditRailOpen}
+            aria-controls="collatz-reddit-rail"
+            onClick={toggleRedditRail}
+          >
+            r/Collatz
+          </button>
+        </div>
         <header className="mobile-topbar">
           <button
             type="button"
@@ -2596,6 +2842,24 @@ export default function App() {
               </div>
             </div>
           </div>
+          <button
+            type="button"
+            className={`secondary-button mobile-rail-toggle${computeRailOpen ? " active" : ""}`}
+            aria-expanded={computeRailOpen}
+            aria-controls="collatz-compute-rail"
+            onClick={toggleComputeRail}
+          >
+            Compute
+          </button>
+          <button
+            type="button"
+            className={`secondary-button mobile-rail-toggle${redditRailOpen ? " active" : ""}`}
+            aria-expanded={redditRailOpen}
+            aria-controls="collatz-reddit-rail"
+            onClick={toggleRedditRail}
+          >
+            Feed
+          </button>
           <button type="button" className="secondary-button mobile-refresh" onClick={() => setRefreshNonce((current) => current + 1)}>
             Refresh
           </button>
@@ -2640,11 +2904,12 @@ export default function App() {
             </form>
           </section>
         ) : null}
+
+        <div className="workspace-shell">
+        <div className="workspace-center">
         <div className="global-math-ticker-shell">
           <MathTicker run={tickerSourceRun} orbit={tickerOrbitFrames} frameIndex={orbitFrame} isActive={anyLiveRun} />
         </div>
-
-        <div className="workspace-shell">
         <div className="workspace-primary">
 
         {activeTab === "overview" ? (
@@ -2688,6 +2953,30 @@ export default function App() {
               <SummaryCard label="Tasks" value={summary.open_task_count} note="open items" />
               <SummaryCard label="Artifacts" value={summary.artifact_count} note="outputs" />
             </section>
+          ) : null}
+
+          {hasLoaded && sandboxPromisingFollowupTasks.length > 0 ? (
+            <div className="overview-followup-strip" role="status">
+              <p className="overview-followup-strip__copy">
+                <span className="overview-followup-strip__label">Sandbox follow-up</span>
+                {sandboxPromisingFollowupTasks.length === 1
+                  ? " One open task for a Promising probe — continue in Backlog."
+                  : ` ${sandboxPromisingFollowupTasks.length} open tasks for Promising probes — continue in Backlog.`}
+              </p>
+              <div className="overview-followup-strip__actions">
+                <button
+                  type="button"
+                  className="secondary-button overview-followup-strip__btn"
+                  onClick={() => {
+                    setActiveTab("queue");
+                    setOperationsView("backlog");
+                    updateFilter("taskQuery", "sandbox-promising-followup");
+                  }}
+                >
+                  Open Backlog
+                </button>
+              </div>
+            </div>
           ) : null}
 
           <SectionIntro
@@ -2750,8 +3039,17 @@ export default function App() {
                       <p>No hardware inventory endpoint is visible yet. The run ledger still gives us CPU/GPU evidence.</p>
                     ) : (
                       <div className="surface-list">
-                        {hardwareInventory.slice(0, 4).map((item, index) => {
+                        {hardwareInventory.slice(0, 8).map((item, index) => {
                           const label = item.name || item.label || item.model || item.type || item.id || `Hardware ${index + 1}`;
+                          const sd = item.metadata?.smart_detection;
+                          const collatzExec =
+                            sd?.collatz_gpu_executable !== undefined
+                              ? sd.collatz_gpu_executable
+                              : sd?.collatz_cpu_executable;
+                          const smartLine =
+                            sd?.primary_signal != null
+                              ? `auto ${sd.primary_signal}${collatzExec !== undefined ? ` · collatz ${collatzExec ? "exec" : "no-exec"}` : ""}`
+                              : null;
                           const details = [
                             item.status,
                             item.kind,
@@ -2761,7 +3059,8 @@ export default function App() {
                             item.memory ? `${item.memory} GB` : null,
                             Array.isArray(item.supported_kernels) && item.supported_kernels.length > 0
                               ? item.supported_kernels.join(", ")
-                              : "detected only"
+                              : "detected only",
+                            smartLine
                           ]
                             .filter(Boolean)
                             .join(" | ");
@@ -2915,6 +3214,12 @@ export default function App() {
             onSelectRun={selectOrbitRun}
             onJumpToSection={jumpToSection}
           />
+          <LiveExecutionHint
+            totalRuns={state.runs.length}
+            queuedRuns={queuedRuns}
+            runningRuns={runningRuns}
+            hardwareInventory={hardwareInventory}
+          />
           <div className="live-math-strip">
             <article className="live-status-card">
               <span className="metric-label">Selected run</span>
@@ -2925,16 +3230,36 @@ export default function App() {
               <span className="metric-label">Run progress</span>
               <strong>
                 {selectedRunProgress.total > 0
-                  ? `${selectedRunProgress.processed.toLocaleString()} / ${selectedRunProgress.total.toLocaleString()}`
+                  ? `${selectedRunProgress.processed.toLocaleString()} / ${selectedRunProgress.total.toLocaleString()}${
+                      selectedRunProgress.seedUnit === "odd seeds" ? " odd seeds" : " values"
+                    }`
                   : "No progress yet"}
               </strong>
               <p>
                 {selectedRunIsLive
-                  ? `${selectedRunProgress.percent.toFixed(1)}% of the interval has been processed live.`
+                  ? `${selectedRunProgress.percent.toFixed(1)}% ${
+                      selectedRunProgress.seedUnit === "odd seeds"
+                        ? "of odd seeds in the run range have been processed live."
+                        : "of the linear interval has been processed live."
+                    }`
                   : selectedOrbitRun
-                    ? `Saved result: ${selectedRunProgress.percent.toFixed(1)}% of the interval was processed before completion.`
+                    ? `Saved result: ${selectedRunProgress.percent.toFixed(1)}% ${
+                        selectedRunProgress.seedUnit === "odd seeds"
+                          ? "of odd seeds in the run range were processed before completion."
+                          : "of the linear interval was processed before completion."
+                      }`
                     : "No run progress is available yet."}
               </p>
+              {selectedRunProgress.linearSpan != null &&
+              selectedRunProgress.linearSpan > 0 &&
+              selectedRunProgress.seedUnit === "odd seeds" ? (
+                <p
+                  className="live-sieve-progress-inline"
+                  title={`Interval: ${selectedRunProgress.linearSpan.toLocaleString()} consecutive integers. Sieve kernels count odd seeds only (one unit per odd n in range), not every integer — so processed/total are ~half the linear width.`}
+                >
+                  {selectedRunProgress.linearSpan.toLocaleString()} integers in range · counts odd seeds only
+                </p>
+              ) : null}
             </article>
             <article className="live-status-card">
               <span className="metric-label"><span className={activeCpuRuns > 0 ? "live-dot" : "idle-dot"} /> CPU execution</span>
@@ -2943,6 +3268,9 @@ export default function App() {
                   ? `${cpuCapability.metadata.logical_cores} logical cores`
                   : "CPU visible"}
               </strong>
+              {apiHostSummary ? (
+                <p className="live-card-note live-api-host-meta">Inventory host (API server): {apiHostSummary}</p>
+              ) : null}
               {cpuCapability?.metadata?.usage_percent != null ? (
                 <>
                   <div className="usage-bar-wrap">
@@ -2972,7 +3300,12 @@ export default function App() {
             </article>
             <article className="live-status-card">
               <span className="metric-label"><span className={activeGpuRuns > 0 ? "live-dot" : "idle-dot"} /> GPU execution</span>
-              <strong>{gpuCapability?.label || "No GPU record"}</strong>
+              <strong>{gpuCapability?.label || "No GPU in API inventory"}</strong>
+              {gpuCapability &&
+              (!gpuCapability.supported_kernels || gpuCapability.supported_kernels.length === 0) &&
+              gpuCapability.metadata?.diagnostic ? (
+                <p className="live-card-note">{gpuCapability.metadata.diagnostic}</p>
+              ) : null}
               {gpuCapability?.metadata?.usage_percent != null ? (
                 <>
                   <div className="usage-bar-wrap">
@@ -2989,14 +3322,21 @@ export default function App() {
                   </p>
                 </>
               ) : (
-                <div className="live-hw-detail">
-                  <span className={activeGpuRuns > 0 ? "live-dot-sm" : "idle-dot-sm"} />
-                  <span>
-                    {gpuCapability
-                      ? `Collatz GPU runs active now: ${activeGpuRuns}. Historical GPU runs saved: ${gpuRuns}.`
-                      : "No GPU capability is exposed."}
-                  </span>
-                </div>
+                <>
+                  <div className="live-hw-detail">
+                    <span className={activeGpuRuns > 0 ? "live-dot-sm" : "idle-dot-sm"} />
+                    <span>
+                      {gpuCapability
+                        ? (gpuCapability.supported_kernels || []).length > 0
+                          ? `Collatz GPU runs active now: ${activeGpuRuns}. Historical GPU runs saved: ${gpuRuns}.`
+                          : "This GPU is listed for visibility only until a non-CUDA backend ships."
+                        : "No display adapter was enumerated on the API host."}
+                    </span>
+                  </div>
+                  {gpuCapability?.metadata?.gpu_usage_hint ? (
+                    <p className="live-card-note live-card-note-micro">{gpuCapability.metadata.gpu_usage_hint}</p>
+                  ) : null}
+                </>
               )}
             </article>
           </div>
@@ -3005,9 +3345,16 @@ export default function App() {
               <span className="live-activity-title"><span className="live-dot" /> Active runs</span>
               <div className="live-activity-rows">
                 {runningRunOptions.map((run) => {
-                  const d = runLiveDetails(run);
-                  const speedLabel = d.speed > 1e6 ? `${(d.speed / 1e6).toFixed(1)}M/s`
-                    : d.speed > 1e3 ? `${(d.speed / 1e3).toFixed(0)}K/s` : `${Math.round(d.speed)}/s`;
+                  const d = runLiveDetails(run, { pollRef: liveSpeedPollRef });
+                  const fmtSpd = (v) =>
+                    v > 1e6 ? `${(v / 1e6).toFixed(1)}M/s`
+                      : v > 1e3 ? `${(v / 1e3).toFixed(0)}K/s` : `${Math.round(v)}/s`;
+                  const speedLabel =
+                    d.speedRecent > 0 && d.speedAvg > 0
+                      ? `${fmtSpd(d.speedRecent)} now · ${fmtSpd(d.speedAvg)} avg`
+                      : d.speed > 0
+                        ? fmtSpd(d.speed)
+                        : "";
                   const betweenCheckpoints = d.processed === 0 && run.status === "running";
                   return (
                     <div key={run.id} className="live-activity-row">
@@ -3026,10 +3373,27 @@ export default function App() {
                       </div>
                       <div className="live-activity-details">
                         {betweenCheckpoints ? (
-                          <span>Processing first batch ({d.total.toLocaleString()} seeds) — checkpoint pending</span>
+                          <span
+                            title={
+                              (run.kernel || "").includes("sieve")
+                                ? "Sieve runs count odd seeds. The dashboard only updates after each checkpoint batch finishes (one big GPU/CPU call). The number below is the full run size, not one batch — large gpu-sieve batches can take many minutes with no progress bar movement."
+                                : "Metrics update after each batch completes."
+                            }
+                          >
+                            First batch running — checkpoint pending (updates when this batch finishes; can be many minutes on
+                            GPU). <strong>Full run</strong>: {d.total.toLocaleString()} {d.seedUnit}
+                            {(run.kernel || "").includes("sieve") ? " — not the batch size" : ""}.
+                          </span>
                         ) : (
                           <>
-                            <span>{d.processed.toLocaleString()} / {d.total.toLocaleString()} seeds</span>
+                            <span>
+                              {d.processed.toLocaleString()} / {d.total.toLocaleString()} {d.seedUnit}
+                              {d.seedUnit === "odd seeds" ? (
+                                <span className="live-sieve-hint" title="Sieve kernels count odd seeds only; throughput usually falls as n grows (longer trajectories).">
+                                  {" "}(sieve)
+                                </span>
+                              ) : null}
+                            </span>
                             {d.currentSeed > 0 && <span className="live-seed">@ {d.currentSeed.toLocaleString()}</span>}
                           </>
                         )}
@@ -3047,7 +3411,7 @@ export default function App() {
             </div>
           )}
           <div className="live-math-shell">
-            <RunRail runs={runRailOptions} selectedRunId={selectedOrbitRun?.id ?? ""} onSelectRun={selectOrbitRun} />
+            <RunRail runs={runRailOptions} selectedRunId={selectedOrbitRun?.id ?? ""} onSelectRun={selectOrbitRun} speedPollRef={liveSpeedPollRef} />
             <OrbitPanel
               sectionId="live-trace"
               run={selectedOrbitRun}
@@ -3057,6 +3421,7 @@ export default function App() {
               runs={selectorRunOptions}
               expanded
               showSelector={false}
+              speedPollRef={liveSpeedPollRef}
             />
           </div>
           <div className="live-support-grid">
@@ -3240,7 +3605,10 @@ export default function App() {
                     {state.runs.filter(r => ["running","queued"].includes(r.status)).slice(0, 8).map(run => (
                       <article key={run.id} className="list-card">
                         <strong>{run.id}</strong> <span className="meta-line">{run.kernel} · {run.hardware} · {run.status}</span>
-                        <span className="ts-micro">{formatCompactTimestamp(run.started_at || run.created_at)}</span>
+                        <span className="ts-micro">
+                          {formatCompactTimestamp(run.started_at || run.created_at)}
+                          {runTimingMicroSuffix(run, { pollRef: liveSpeedPollRef })}
+                        </span>
                         <p className="meta-line">[{run.range_start?.toLocaleString()}, {run.range_end?.toLocaleString()}]</p>
                         {run.summary ? <p className="meta-line">{run.summary}</p> : null}
                       </article>
@@ -3349,7 +3717,9 @@ export default function App() {
                       {visibleComputeTasks.map((task) => (
                         <article key={task.id} className="list-card">
                           <strong>{task.title}</strong>
-                          <p>{task.description}</p>
+                          <div className="queue-card-description" title={task.description}>
+                            {task.description}
+                          </div>
                           <p className="meta-line">{task.id} | {task.direction_slug} | {task.kind} | priority {task.priority}</p>
                         </article>
                       ))}
@@ -3384,7 +3754,9 @@ export default function App() {
                       {visibleTheoryTasks.map((task) => (
                         <article key={task.id} className="list-card">
                           <strong>{task.title}</strong>
-                          <p>{task.description}</p>
+                          <div className="queue-card-description" title={task.description}>
+                            {task.description}
+                          </div>
                           <p className="meta-line">{task.id} | {task.direction_slug} | {task.kind} | priority {task.priority}</p>
                         </article>
                       ))}
@@ -3833,7 +4205,10 @@ export default function App() {
                         </div>
                         <StatusPill value={run.status} />
                       </div>
-                      <span className="ts-micro">{formatCompactTimestamp(run.finished_at || run.started_at || run.created_at)}</span>
+                      <span className="ts-micro">
+                        {formatCompactTimestamp(run.finished_at || run.started_at || run.created_at)}
+                        {runTimingMicroSuffix(run, { pollRef: liveSpeedPollRef })}
+                      </span>
                       <div className="metric-grid three-up">
                         <div>
                           <span className="metric-label">Direction</span>
@@ -3960,7 +4335,10 @@ export default function App() {
                         <StatusPill value={run.status} />
                       </div>
                       <h3>{run.name}</h3>
-                      <span className="ts-micro">{formatCompactTimestamp(run.finished_at || run.started_at || run.created_at)}</span>
+                      <span className="ts-micro">
+                        {formatCompactTimestamp(run.finished_at || run.started_at || run.created_at)}
+                        {runTimingMicroSuffix(run, { pollRef: liveSpeedPollRef })}
+                      </span>
                       <div className="metric-grid three-up">
                         <div>
                           <span className="metric-label">Direction</span>
@@ -3998,7 +4376,29 @@ export default function App() {
             <article className="panel" id="evidence-claims">
               <SectionIntro
                 title="Claims"
-                text="Candidate mathematical statements and their current evidence status."
+                stackAction
+                text={
+                  <>
+                    <p className="claims-intro-lead">
+                      Theory and sandbox statements with evidence status. Hypothesis-sandbox rows are exploratory probes,
+                      not proofs — use status and linked artifacts to judge them.
+                    </p>
+                    <details className="claims-help-drawer">
+                      <summary>How to read statuses, duplicates, and follow-up</summary>
+                      <div className="claims-help-drawer__body">
+                        <p>
+                          <strong>Idea</strong> = inconclusive or model stress; <strong>promising</strong> = worth
+                          follow-up or falsification; <strong>refuted</strong> = pattern not seen in the tested range.
+                        </p>
+                        <p>
+                          Duplicate titles usually mean the battery or worker created a new claim on a later run — filter
+                          by Direction or export JSON. For high-signal follow-up see{" "}
+                          <code>docs/HIGH_SIGNAL_EVIDENCE.md</code>.
+                        </p>
+                      </div>
+                    </details>
+                  </>
+                }
                 action={
                   <ShowMoreButton
                     total={filteredClaims.length}
@@ -4008,7 +4408,7 @@ export default function App() {
                   />
                 }
               />
-              <FilterBar onClear={clearClaimFilters} clearLabel="Clear search">
+              <FilterBar className="filter-bar--claims" onClear={clearClaimFilters} clearLabel="Clear search">
                 <FilterField label="Search">
                   <input
                     className="filter-input"
@@ -4061,11 +4461,24 @@ export default function App() {
                 <EmptyState title="No claims match the search" text="Adjust the search or create a new claim." />
               ) : (
                 <div className="stack-list">
-                  {visibleClaims.map((claim) => (
-                    <article key={claim.id} className={selectedEvidence.kind === "claim" && selectedEvidence.id === claim.id ? "list-card evidence-card-selected" : "list-card"}>
+                  {visibleClaims.map((claim) => {
+                    const accent = claim.status
+                      ? `claim-card-accent claim-card-accent--${String(claim.status).replace(/[^a-z0-9_-]/g, "")}`
+                      : "";
+                    const cardClass =
+                      selectedEvidence.kind === "claim" && selectedEvidence.id === claim.id
+                        ? `list-card evidence-card-selected ${accent}`
+                        : `list-card ${accent}`;
+                    return (
+                    <article key={claim.id} className={cardClass.trim()}>
                       <div className="card-head">
                         <div>
                           <span className="evidence-type-pill evidence-type-claim">Claim</span>
+                          {claim.direction_slug === "hypothesis-sandbox" ? (
+                            <span className="evidence-type-pill evidence-type-sandbox" title="Automated sandbox probe — not a formal claim">
+                              Sandbox
+                            </span>
+                          ) : null}
                           <h3>{claim.title}</h3>
                           <p>{claim.id} | {claim.direction_slug}</p>
                         </div>
@@ -4085,7 +4498,8 @@ export default function App() {
                         </button>
                       </div>
                     </article>
-                  ))}
+                    );
+                  })}
                 </div>
               )}
             </article>
@@ -4340,6 +4754,35 @@ export default function App() {
             {actionState.message ? (
               <div className={actionState.tone === "error" ? "action-status action-status-error" : "action-status action-status-success"}>
                 {actionState.message}
+              </div>
+            ) : null}
+            {operationsView === "compute" ? (
+              <div className="compute-followup-callout">
+                <p className="compute-followup-callout__text">
+                  When a sandbox probe is marked <span className="status-pill-soft">Promising</span>, the lab adds a
+                  follow-up <strong>task</strong> (human checklist) — it does not appear as a queued run here.
+                </p>
+                <div className="compute-followup-callout__row">
+                  <button
+                    type="button"
+                    className="secondary-button"
+                    onClick={() => setOperationsView("backlog")}
+                  >
+                    Open Backlog
+                  </button>
+                  {sandboxPromisingFollowupTasks.length > 0 ? (
+                    <button
+                      type="button"
+                      className="secondary-button"
+                      onClick={() => {
+                        setOperationsView("backlog");
+                        updateFilter("taskQuery", "sandbox-promising-followup");
+                      }}
+                    >
+                      Filter follow-ups ({sandboxPromisingFollowupTasks.length})
+                    </button>
+                  ) : null}
+                </div>
               </div>
             ) : null}
             <div className="action-grid">
@@ -4599,6 +5042,196 @@ export default function App() {
                   {actionState.pendingKey === "claim link" ? "Linking..." : "Save claim link"}
                 </button>
               </form>
+              ) : null}
+
+              {operationsView === "theory" ? (
+              <form className="action-card hypothesis-tool-card" onSubmit={handleHypothesisBatterySubmit}>
+                <h3>Hypothesis sandbox — full battery</h3>
+                <p className="tool-lead">
+                  One pass over every built-in sandbox probe at <code>end=50_000</code>. Saves claims and JSON
+                  artifacts; expect a few minutes.
+                </p>
+                <ul className="tool-bullets">
+                  <li>Residue strata, records, trajectories, growth, mod‑3 structural check</li>
+                  <li>Smaller rotating probes still run on the worker automatically</li>
+                </ul>
+                <details className="tool-details">
+                  <summary>cpu-barina and documentation</summary>
+                  <p className="meta-line">
+                    <strong>cpu-barina</strong> is an experimental <em>run kernel</em>, not part of this battery.
+                    Queue it from <strong>Operations → Compute</strong> if you need Barina path metrics. See{" "}
+                    <code>docs/HYPOTHESIS_SANDBOX.md</code> for probe details.
+                  </p>
+                </details>
+                <div className="action-button-row">
+                  <button
+                    className="secondary-button action-button"
+                    type="submit"
+                    disabled={actionState.pendingKey === "hypothesis battery"}
+                  >
+                    {actionState.pendingKey === "hypothesis battery" ? "Running…" : "Run full battery"}
+                  </button>
+                </div>
+              </form>
+              ) : null}
+
+              {operationsView === "theory" ? (
+              <form className="action-card hypothesis-tool-card" onSubmit={handleHypothesisBatteryStabilitySubmit}>
+                <h3>Hypothesis sandbox — battery stability</h3>
+                <p className="tool-lead">
+                  Runs the <strong>same probes</strong> at three <code>end</code> scales (50k, 200k, 1M) and
+                  compares statuses. Useful to catch patterns that only hold in a short range.
+                </p>
+                <ul className="tool-bullets">
+                  <li>
+                    Flags <strong>status flips</strong> between scales (possible finite-range artifact)
+                  </li>
+                  <li>Does <strong>not</strong> create claims — results below; you can export JSON</li>
+                </ul>
+                <details className="tool-details">
+                  <summary>What runs under the hood</summary>
+                  <p className="meta-line">
+                    Stratified mod‑8 residue, glide / odd-step fraction, growth vs Lagarias heuristic, mod‑3
+                    redundancy (capped). Large ranges use <code>odd_stride</code> on stratified residue (
+                    <code>odd_stride_by_scale</code> in JSON). Can take several minutes.
+                  </p>
+                </details>
+                <div className="ios-toggle-row">
+                  <div className="ios-toggle-copy">
+                    <span className="ios-toggle-label">Save report to workspace</span>
+                    <p className="meta-line" style={{ marginTop: 4 }}>
+                      <code>artifacts/hypotheses/</code> · metadata <code>battery-stability-report</code>
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={batteryStabilityPersist}
+                    aria-label="Save battery stability report to workspace artifacts"
+                    disabled={
+                      actionState.pendingKey === "hypothesis battery" ||
+                      actionState.pendingKey === "battery stability"
+                    }
+                    className={`ios-switch${batteryStabilityPersist ? " ios-switch--on" : ""}`}
+                    onClick={() => setBatteryStabilityPersist((v) => !v)}
+                  />
+                </div>
+                <div className="action-button-row">
+                  <button
+                    className="secondary-button action-button"
+                    type="submit"
+                    disabled={
+                      actionState.pendingKey === "hypothesis battery" ||
+                      actionState.pendingKey === "battery stability"
+                    }
+                  >
+                    {actionState.pendingKey === "battery stability" ? "Running…" : "Run stability report"}
+                  </button>
+                </div>
+              </form>
+              ) : null}
+
+              {operationsView === "theory" && batteryStabilityReport ? (
+              <div className="action-card">
+                <h3>Last battery stability result</h3>
+                <p className="meta-line">
+                  Verdict: <strong>{batteryStabilityReport.stability_verdict || "—"}</strong> · Endpoints:{" "}
+                  {(batteryStabilityReport.endpoints || []).join(", ")} ·{" "}
+                  <strong>{(batteryStabilityReport.status_flips || []).length}</strong> status flip(s)
+                </p>
+                {(batteryStabilityReport.summary_lines || []).length > 0 ? (
+                  <div className="note-block note-block-compact" style={{ marginTop: "0.5rem" }}>
+                    <strong>Summary</strong>
+                    <ul style={{ margin: "0.35rem 0 0", paddingLeft: "1.25rem" }}>
+                      {(batteryStabilityReport.summary_lines || []).map((line, idx) => (
+                        <li key={`st-sum-${idx}`} style={{ marginBottom: "0.2rem" }}>
+                          {line}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                ) : null}
+                <div style={{ marginTop: "0.75rem", overflowX: "auto" }}>
+                  <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.85rem" }}>
+                    <thead>
+                      <tr>
+                        <th style={{ textAlign: "left", padding: "0.35rem", borderBottom: "1px solid var(--border-subtle, #ccc)" }}>
+                          Probe
+                        </th>
+                        {(batteryStabilityReport.endpoints || []).map((ep) => (
+                          <th
+                            key={`h-${ep}`}
+                            style={{ padding: "0.35rem", borderBottom: "1px solid var(--border-subtle, #ccc)" }}
+                          >
+                            end={ep}
+                          </th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {["stratified_mod8", "glide", "growth", "mod3_redundancy"].map((slug) => (
+                        <tr key={slug}>
+                          <td style={{ padding: "0.35rem", fontFamily: "monospace" }}>{slug}</td>
+                          {(batteryStabilityReport.endpoints || []).map((ep) => (
+                            <td key={`${slug}-${ep}`} style={{ padding: "0.35rem" }}>
+                              {batteryStabilityReport.by_scale?.[String(ep)]?.[slug] ?? "—"}
+                            </td>
+                          ))}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                {(batteryStabilityReport.status_flips || []).length > 0 ? (
+                  <ul style={{ margin: "0.5rem 0", paddingLeft: "1.25rem" }}>
+                    {batteryStabilityReport.status_flips.map((flip, idx) => (
+                      <li key={`${flip.probe}-${flip.from_end}-${flip.to_end}-${idx}`}>
+                        <code>{flip.probe}</code>: {String(flip.from_end)} → {String(flip.to_end)} —{" "}
+                        <strong>{flip.from_status}</strong> → <strong>{flip.to_status}</strong>
+                      </li>
+                    ))}
+                  </ul>
+                ) : (
+                  <p className="meta-line">No status changes between scales for the tracked probes.</p>
+                )}
+                <div className="action-fields" style={{ marginTop: "0.75rem" }}>
+                  <div className="filter-input" style={{ padding: "0.5rem", fontSize: "0.85rem" }}>
+                    <strong>By scale</strong>
+                    <pre
+                      style={{
+                        margin: "0.5rem 0 0",
+                        whiteSpace: "pre-wrap",
+                        wordBreak: "break-word",
+                        maxHeight: "14rem",
+                        overflow: "auto"
+                      }}
+                    >
+                      {JSON.stringify(batteryStabilityReport.by_scale || {}, null, 2)}
+                    </pre>
+                  </div>
+                </div>
+                <div className="action-button-row" style={{ marginTop: "0.75rem", display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
+                  <button
+                    type="button"
+                    className="secondary-button action-button"
+                    onClick={() =>
+                      exportJsonFile(
+                        `battery-stability-${new Date().toISOString().slice(0, 19).replace(/:/g, "-")}.json`,
+                        batteryStabilityReport
+                      )
+                    }
+                  >
+                    Download JSON
+                  </button>
+                  <button
+                    type="button"
+                    className="secondary-button action-button"
+                    onClick={() => setBatteryStabilityReport(null)}
+                  >
+                    Dismiss
+                  </button>
+                </div>
+              </div>
               ) : null}
 
               {operationsView === "sources" ? (
@@ -5299,16 +5932,84 @@ export default function App() {
             <EmptyState title="Queue is empty for this filter" text="Create tasks from the CLI or API and they will appear here." />
           ) : (
             <div className="stack-list">
-              {visibleTasks.map((task) => (
+              {visibleTasks.map((task) => {
+                const followupParsed = parsePromisingFollowupDescription(task.description);
+                return (
                 <article key={task.id} className="panel queue-card">
                   <div className="card-head">
                     <div>
                       <h3>{task.title}</h3>
-                      <p>{task.id} | {task.direction_slug}</p>
+                      <p className="queue-card-subline">
+                        {followupParsed?.claimId ? (
+                          <>
+                            <span className="queue-card-subline__k">Task</span> {task.id}
+                            <span className="queue-card-subline__sep"> · </span>
+                            <span className="queue-card-subline__k">Claim</span> {followupParsed.claimId}
+                            <span className="queue-card-subline__sep"> · </span>
+                            {task.direction_slug}
+                          </>
+                        ) : (
+                          <>
+                            {task.id} | {task.direction_slug}
+                          </>
+                        )}
+                      </p>
                     </div>
                     <StatusPill value={task.status} />
                   </div>
-                  <p>{task.description}</p>
+                  {followupParsed ? (
+                    <div className="sandbox-followup-card-body">
+                      <p className="sandbox-followup-card-body__lead">
+                        This is a <strong>checklist</strong> for a statistical / exploratory sandbox result — not a proof
+                        step. See <code>docs/HIGH_SIGNAL_EVIDENCE.md</code> for the full rubric.
+                      </p>
+                      {followupParsed.probeTitle ? (
+                        <p className="sandbox-followup-card-body__probe">
+                          <span className="queue-card-subline__k">Probe</span> {followupParsed.probeTitle}
+                        </p>
+                      ) : null}
+                      {followupParsed.checklistItems.length > 0 ? (
+                        <ol className="sandbox-followup-checklist">
+                          {followupParsed.checklistItems.map((item, idx) => (
+                            <li key={`chk-${task.id}-${idx}`}>{item}</li>
+                          ))}
+                        </ol>
+                      ) : null}
+                      <div className="sandbox-followup-card-body__actions">
+                        {followupParsed.claimId ? (
+                          <button
+                            type="button"
+                            className="secondary-button"
+                            onClick={() => goToSandboxClaimReview(followupParsed.claimId)}
+                          >
+                            Open claim in Evidence
+                          </button>
+                        ) : null}
+                        <button
+                          type="button"
+                          className="secondary-button"
+                          onClick={() => {
+                            setOperationsView("theory");
+                          }}
+                        >
+                          Stability / battery (Theory)
+                        </button>
+                      </div>
+                      <p className="sandbox-followup-card-body__footnote">
+                        There is no separate Review screen: work the list, inspect the claim and its JSON artifact, run
+                        battery stability from Theory if needed, then mark the task <strong>done</strong> when finished.
+                        (Dashboard task status controls are not wired yet; use the API or DB tooling for now.)
+                      </p>
+                      <details className="sandbox-followup-raw">
+                        <summary>Raw task description</summary>
+                        <pre className="sandbox-followup-pre">{followupParsed.fullText}</pre>
+                      </details>
+                    </div>
+                  ) : (
+                  <div className="queue-card-description" title={task.description}>
+                    {task.description}
+                  </div>
+                  )}
                   <div className="metric-grid three-up">
                     <div>
                       <span className="metric-label">Owner</span>
@@ -5324,12 +6025,17 @@ export default function App() {
                     </div>
                   </div>
                 </article>
-              ))}
+              );
+              })}
             </div>
           )}
           </>
           ) : null}
         </section>
+        ) : null}
+
+        {activeTab === "benchmark" ? (
+        <BenchmarkPanel />
         ) : null}
 
         {activeTab === "paper" ? (
@@ -5339,221 +6045,238 @@ export default function App() {
         ) : null}
 
         {activeTab === "guide" ? (
-        <section className="tab-panel">
-          <SectionIntro
-            title="Guide"
-            text="This page explains what each area means, what Gemini does, and how results should move through the lab."
-          />
-          <SectionSubnav
-            label="Guide views"
-            items={guideViews}
-            activeId={guideView}
-            onChange={setGuideView}
-          />
+        <section className="tab-panel guide-page">
+          <header className="guide-hero">
+            <h1 className="guide-hero-title">Guide</h1>
+            <p className="guide-hero-deck">
+              Tabs, lanes, validation scope, Gemini, and Benchmark (runs on the API host — not only in the browser).
+            </p>
+          </header>
+          <div className="guide-subnav-wrap">
+            <SectionSubnav
+              label="Guide"
+              items={guideViews}
+              activeId={guideView}
+              onChange={setGuideView}
+            />
+          </div>
+
           {guideView === "start" ? (
-            <div className="guide-grid">
-              <article className="panel">
-                <h3>What each area means</h3>
-                <div className="stack-list compact-stack">
-                  <article className="list-card">
-                    <strong>Start Here</strong>
-                    <p>High-level state: what is active, what is validated, and what the lab thinks is worth reading first.</p>
-                  </article>
-                  <article className="list-card">
-                    <strong>Live Math</strong>
-                    <p>Only compute runs appear here. If Gemini creates task IDs above the last run, that does not mean runs are missing.</p>
-                  </article>
-                  <article className="list-card">
-                    <strong>Tracks</strong>
-                    <p>Research lanes: verification, inverse-tree/parity structure, and lemma workspace.</p>
-                  </article>
-                  <article className="list-card">
-                    <strong>Evidence and Operations</strong>
-                    <p>Evidence explains what already exists; Operations is where new runs, claims, reviews, and autopilot tasks are created.</p>
-                  </article>
+            <div className="guide-stack">
+              <section className="guide-card">
+                <h2 className="guide-card-title">Main tabs</h2>
+                <div className="guide-tiles">
+                  <div className="guide-tile">
+                    <span className="guide-tile-k">Start Here</span>
+                    <p className="guide-tile-t">Dashboard: active work, validated runs, what to read first.</p>
+                  </div>
+                  <div className="guide-tile">
+                    <span className="guide-tile-k">Live Math</span>
+                    <p className="guide-tile-t">Compute runs only. High task IDs from Gemini ≠ missing runs.</p>
+                  </div>
+                  <div className="guide-tile">
+                    <span className="guide-tile-k">Tracks</span>
+                    <p className="guide-tile-t">
+                      Lanes: verification, 2-adic, lemmas, inverse-tree parity, <code>hypothesis-sandbox</code> (+
+                      optional <code>cpu-barina</code>).
+                    </p>
+                  </div>
+                  <div className="guide-tile">
+                    <span className="guide-tile-k">Evidence · Operations</span>
+                    <p className="guide-tile-t">
+                      Evidence = existing runs/artifacts/claims. Operations = queue runs, claims, reviews, hypothesis
+                      battery, autopilot.
+                    </p>
+                  </div>
+                  <div className="guide-tile">
+                    <span className="guide-tile-k">Paper</span>
+                    <p className="guide-tile-t">Export narrative — not a substitute for validation.</p>
+                  </div>
+                  <div className="guide-tile">
+                    <span className="guide-tile-k">Benchmark</span>
+                    <p className="guide-tile-t">
+                      Metal <code>gpu-sieve</code> sweep + HoF. Executes on the <strong>API machine</strong> (
+                      <code>metal_sieve_chunk</code> on macOS).
+                    </p>
+                  </div>
                 </div>
-              </article>
-              <article className="panel">
-                <h3>How to read lab IDs</h3>
-                <p className="guide-lead">
-                  `COL-####` is a single lab-wide sequence, not a per-table counter.
+              </section>
+              <section className="guide-card">
+                <h2 className="guide-card-title">Lab IDs</h2>
+                <p className="guide-kicker">
+                  <code>COL-####</code> — one global sequence, not per table.
                 </p>
-                <div className="stack-list compact-stack">
-                  <article className="list-card">
-                    <strong>Runs</strong>
-                    <p>Compute jobs visible in Live Math and Run navigator. The latest saved run is {latestRunId}.</p>
-                  </article>
-                  <article className="list-card">
-                    <strong>Tasks</strong>
-                    <p>Work items created by humans or Gemini. These continue the same ID sequence and live in Operations / backlog.</p>
-                  </article>
-                  <article className="list-card">
-                    <strong>Artifacts</strong>
-                    <p>Files such as reports, JSON, or notes. A Gemini report can be COL-0104 even if no newer run exists.</p>
-                  </article>
+                <div className="guide-tiles guide-tiles--3">
+                  <div className="guide-tile">
+                    <span className="guide-tile-k">Runs</span>
+                    <p className="guide-tile-t">Live Math / navigator. Latest: {latestRunId}.</p>
+                  </div>
+                  <div className="guide-tile">
+                    <span className="guide-tile-k">Tasks</span>
+                    <p className="guide-tile-t">Same ID stream; Operations / backlog.</p>
+                  </div>
+                  <div className="guide-tile">
+                    <span className="guide-tile-k">Artifacts</span>
+                    <p className="guide-tile-t">Files &amp; reports — IDs can outpace run IDs.</p>
+                  </div>
                 </div>
-              </article>
+              </section>
             </div>
           ) : guideView === "roles" ? (
-            <div className="guide-grid">
-              <article className="panel">
-                <h3>Agent workflow</h3>
-                <p className="guide-lead">
-                  The chain from idea to evidence to review matters more than how many roles exist.
-                </p>
-                <ol className="timeline">
+            <div className="guide-stack guide-stack--wide">
+              <section className="guide-card">
+                <h2 className="guide-card-title">Agent chain</h2>
+                <p className="guide-kicker">Idea → evidence → review matters more than role count.</p>
+                <ol className="guide-pipeline">
                   <li>
-                    <strong>compute-agent</strong>
-                    <p>Runs interval sweeps, saves metrics, and produces reproducible artifacts.</p>
+                    <span className="guide-pipeline-n">1</span>
+                    <div>
+                      <strong>compute-agent</strong>
+                      <p>Sweeps, metrics, artifacts. Managed workers = this role.</p>
+                    </div>
                   </li>
                   <li>
-                    <strong>theory-agent</strong>
-                    <p>Proposes claims, filters, inverse-tree ideas, and candidate invariants.</p>
+                    <span className="guide-pipeline-n">2</span>
+                    <div>
+                      <strong>theory-agent</strong>
+                      <p>Claims, filters, inverse-tree ideas, invariants.</p>
+                    </div>
                   </li>
                   <li>
-                    <strong>validator-agent</strong>
-                    <p>Replays results with independent logic before a direction or claim is promoted.</p>
+                    <span className="guide-pipeline-n">3</span>
+                    <div>
+                      <strong>validator-agent</strong>
+                      <p>Independent replay. CPU worker auto-validates verification runs on a cadence.</p>
+                    </div>
                   </li>
                   <li>
-                    <strong>integrator</strong>
-                    <p>Reviews evidence, links runs to claims, and decides whether work stays active, promising, frozen, or refuted.</p>
+                    <span className="guide-pipeline-n">4</span>
+                    <div>
+                      <strong>integrator</strong>
+                      <p>Links runs ↔ claims; active / promising / frozen / refuted.</p>
+                    </div>
                   </li>
                 </ol>
-              </article>
-              <article className="panel">
-                <h3>Practical reading order</h3>
-                <div className="stack-list compact-stack">
-                  <article className="list-card">
-                    <strong>1. Start Here</strong>
-                    <p>Check validated runs, supported claims, and direction status.</p>
-                  </article>
-                  <article className="list-card">
-                    <strong>2. Evidence</strong>
-                    <p>Inspect actual run summaries and artifact links before trusting a pattern.</p>
-                  </article>
-                  <article className="list-card">
-                    <strong>3. Tracks</strong>
-                    <p>Check which lane owns the question you care about and what the next task is.</p>
-                  </article>
-                  <article className="list-card">
-                    <strong>4. Operations</strong>
-                    <p>Create new runs, claims, reviews, or Gemini tasks only after you understand the current evidence.</p>
-                  </article>
+              </section>
+              <section className="guide-card">
+                <h2 className="guide-card-title">Reading order</h2>
+                <div className="guide-steps">
+                  <span>1 · Start Here</span>
+                  <span>2 · Evidence</span>
+                  <span>3 · Tracks</span>
+                  <span>4 · Operations</span>
                 </div>
-              </article>
+                <p className="guide-micro">
+                  Start Here → validated runs &amp; direction status → Evidence → Tracks → queue work in Operations.
+                </p>
+              </section>
             </div>
           ) : guideView === "validation" ? (
-            <div className="guide-grid">
-              <article className="panel">
-                <h3>What validation means here</h3>
-                <div className="stack-list compact-stack">
-                  <article className="list-card">
-                    <strong>Validated result</strong>
-                    <p>An independent replay matched the stored aggregates. That is stronger computational evidence, not a proof.</p>
-                  </article>
-                  <article className="list-card">
-                    <strong>Claim</strong>
-                    <p>A mathematical statement waiting for support or refutation.</p>
-                  </article>
-                  <article className="list-card">
-                    <strong>Artifact</strong>
-                    <p>A saved file. A report can explain a plan without proving or computing anything by itself.</p>
-                  </article>
-                  <article className="list-card">
-                    <strong>Raw run</strong>
-                    <p>A compute record before independent replay finishes.</p>
-                  </article>
-                </div>
-              </article>
-              <article className="panel">
-                <h3>Source review rubric</h3>
-                <div className="stack-list compact-stack">
-                  <article className="list-card">
-                    <strong>1. Classify the source</strong>
-                    <p>Mark it as peer-reviewed, preprint, self-published, forum, blog, Q&A, or news.</p>
-                  </article>
-                  <article className="list-card">
-                    <strong>2. Separate proof from evidence</strong>
-                    <p>Computational checks and almost-all results never count as a full proof on their own.</p>
-                  </article>
-                  <article className="list-card">
-                    <strong>3. Require map discipline</strong>
-                    <p>Any source that blurs standard, shortcut, and odd-only variants should be flagged.</p>
-                  </article>
-                  <article className="list-card">
-                    <strong>4. Falsify local lemmas first</strong>
-                    <p>Run modular probes before spending serious attention on a proof attempt.</p>
-                  </article>
-                </div>
-              </article>
-              <article className="panel">
-                <h3>Consensus baseline</h3>
-                {state.baseline ? (
-                  <div className="stack-list compact-stack">
-                    <article className="list-card">
-                      <strong>{prettyLabel(state.baseline.problem_status)}</strong>
-                      <p>{state.baseline.note}</p>
-                    </article>
-                    {state.baseline.items.map((item) => (
-                      <article key={item.title} className="list-card">
-                        <strong>{item.title}</strong>
-                        <p>{item.detail}</p>
-                      </article>
-                    ))}
+            <div className="guide-stack">
+              <section className="guide-card">
+                <h2 className="guide-card-title">Evidence types</h2>
+                <div className="guide-tiles">
+                  <div className="guide-tile">
+                    <span className="guide-tile-k">Validated</span>
+                    <p className="guide-tile-t">Replay matched aggregates — strong compute evidence, not a proof.</p>
                   </div>
-                ) : (
-                  <EmptyState title="No baseline payload" text="The API baseline endpoint has not responded yet." />
-                )}
-              </article>
+                  <div className="guide-tile">
+                    <span className="guide-tile-k">Claim</span>
+                    <p className="guide-tile-t">Statement until runs/artifacts support it.</p>
+                  </div>
+                  <div className="guide-tile">
+                    <span className="guide-tile-k">Artifact</span>
+                    <p className="guide-tile-t">Saved file; a plan ≠ computation.</p>
+                  </div>
+                  <div className="guide-tile">
+                    <span className="guide-tile-k">Raw run</span>
+                    <p className="guide-tile-t">Before replay completes.</p>
+                  </div>
+                  <div className="guide-tile guide-tile--span">
+                    <span className="guide-tile-k">Kernels</span>
+                    <p className="guide-tile-t">
+                      <code>cpu-sieve</code> / <code>gpu-sieve</code> = standard odd-descent validation contract.{" "}
+                      <code>cpu-barina</code> &amp; sandbox = experimental metrics, not the same replay contract.
+                    </p>
+                  </div>
+                </div>
+              </section>
+              <div className="guide-split">
+                <section className="guide-card">
+                  <h2 className="guide-card-title">Source rubric</h2>
+                  <ul className="guide-checklist">
+                    <li>Classify source type (peer / preprint / forum …).</li>
+                    <li>Split proof vs empirical / almost-all.</li>
+                    <li>Flag blurred map variants (standard vs odd-only).</li>
+                    <li>Modular probes before deep lemma investment.</li>
+                  </ul>
+                </section>
+                <section className="guide-card">
+                  <h2 className="guide-card-title">Baseline</h2>
+                  {state.baseline ? (
+                    <div className="guide-baseline">
+                      <div className="guide-baseline-top">
+                        <strong>{prettyLabel(state.baseline.problem_status)}</strong>
+                        <p>{state.baseline.note}</p>
+                      </div>
+                      <ul className="guide-baseline-list">
+                        {state.baseline.items.map((item) => (
+                          <li key={item.title}>
+                            <strong>{item.title}</strong> {item.detail}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  ) : (
+                    <EmptyState title="No baseline" text="API baseline not loaded yet." />
+                  )}
+                </section>
+              </div>
             </div>
           ) : (
-            <div className="guide-grid">
-              <article className="panel">
-                <h3>How Gemini is used safely</h3>
-                <div className="stack-list compact-stack">
-                  <article className="list-card">
-                    <strong>What it can do</strong>
-                    <p>Draft source reviews, summarize local history, propose bounded tasks, and recommend a direction to inspect next.</p>
-                  </article>
-                  <article className="list-card">
-                    <strong>What it cannot do</strong>
-                    <p>It does not auto-promote claims, does not replace validation, and does not create proof truth by itself.</p>
-                  </article>
-                  <article className="list-card">
-                    <strong>Where its output appears</strong>
-                    <p>New tasks show up in Operations / backlog. Planning reports show up in Evidence as artifacts. They do not appear as new compute runs.</p>
-                  </article>
+            <div className="guide-stack guide-stack--wide">
+              <section className="guide-card">
+                <h2 className="guide-card-title">Gemini scope</h2>
+                <div className="guide-tiles">
+                  <div className="guide-tile">
+                    <span className="guide-tile-k">Can</span>
+                    <p className="guide-tile-t">Draft reviews, summarize history, propose tasks, suggest next direction.</p>
+                  </div>
+                  <div className="guide-tile">
+                    <span className="guide-tile-k">Cannot</span>
+                    <p className="guide-tile-t">
+                      Auto-promote claims, replace validation, or run Metal/GPU — compute stays on workers.
+                    </p>
+                  </div>
+                  <div className="guide-tile">
+                    <span className="guide-tile-k">Output</span>
+                    <p className="guide-tile-t">Tasks → Operations / backlog. Reports → Evidence artifacts (not new runs).</p>
+                  </div>
                 </div>
-              </article>
-              <article className="panel">
-                <h3>Current Gemini status</h3>
-                <div className="stack-list compact-stack">
-                  <article className="list-card">
-                    <strong>Provider</strong>
-                    <p>
-                      {state.llmStatus?.ready
-                        ? `${state.llmStatus.model} is ready with local memory mode ${state.llmStatus.memory_mode || "local_history"}.`
-                        : state.llmStatus?.note || "Gemini is not ready yet."}
-                    </p>
-                  </article>
-                  <article className="list-card">
-                    <strong>Background loop</strong>
-                    <p>
-                      {state.autopilotStatus?.enabled
-                        ? `Enabled every ${state.autopilotStatus.interval_seconds || 1800}s. Last success ${formatTimestamp(state.autopilotStatus.last_success_at)}.`
-                        : "Paused. Manual draft/apply runs still work from Operations."}
-                    </p>
-                  </article>
-                  <article className="list-card">
-                    <strong>Latest applied tasks</strong>
-                    <p>
-                      {state.autopilotStatus?.last_applied_task_ids?.length
-                        ? state.autopilotStatus.last_applied_task_ids.join(", ")
-                        : "No applied tasks recorded yet."}
-                    </p>
-                  </article>
-                </div>
-              </article>
+              </section>
+              <section className="guide-card guide-card--status">
+                <h2 className="guide-card-title">Status</h2>
+                <dl className="guide-dl">
+                  <dt>Model</dt>
+                  <dd>
+                    {state.llmStatus?.ready
+                      ? `${state.llmStatus.model} · ${state.llmStatus.memory_mode || "local_history"}`
+                      : state.llmStatus?.note || "Not ready"}
+                  </dd>
+                  <dt>Autopilot</dt>
+                  <dd>
+                    {state.autopilotStatus?.enabled
+                      ? `Every ${state.autopilotStatus.interval_seconds || 1800}s · last ${formatTimestamp(state.autopilotStatus.last_success_at)}`
+                      : "Paused (manual OK)"}
+                  </dd>
+                  <dt>Last applied</dt>
+                  <dd>
+                    {state.autopilotStatus?.last_applied_task_ids?.length
+                      ? state.autopilotStatus.last_applied_task_ids.join(", ")
+                      : "—"}
+                  </dd>
+                </dl>
+              </section>
             </div>
           )}
         </section>
@@ -5583,22 +6306,13 @@ export default function App() {
             <span>Copyright (c) 2026 Cosmin Trica</span>
           </div>
         </footer>
-        <LogsPanel open={logsOpen} onClose={() => setLogsOpen(false)} />
-        <ComputeBudgetRail
-          computeProfile={computeProfile}
-          quickForms={quickForms}
-          updateQuickForm={updateQuickForm}
-          handleSubmit={handleComputeProfileSubmit}
-          handleToggleContinuous={handleToggleContinuous}
-          actionState={actionState}
-          effectiveCpuBudget={effectiveCpuBudget}
-          effectiveGpuBudget={effectiveGpuBudget}
-        />
+        </div>
         <RedditIntelRail
           feed={state.redditFeed}
           onImportPost={handleRedditImport}
           pendingKey={actionState.pendingKey}
         />
+        <LogsPanel open={logsOpen} onClose={() => setLogsOpen(false)} />
         </div>
       </div>
     </main>

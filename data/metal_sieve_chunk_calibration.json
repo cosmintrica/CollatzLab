@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "chunk_odds": 16777216,
+  "recorded_at": "2026-03-24T02:41:35+00:00",
+  "platform": "Darwin",
+  "interval": {
+    "start": 1,
+    "end": 96000000,
+    "odd_seeds": 48000000
+  },
+  "winner": {
+    "metal_chunk_size": 16777216,
+    "seconds_median": 0.09657,
+    "odd_per_sec": 497050919.3,
+    "odd_per_sec_millions": 497.051,
+    "reps_seconds": [
+      0.098196,
+      0.096072,
+      0.09657,
+      0.096723,
+      0.096254
+    ]
+  },
+  "odd_per_sec_millions": 497.051,
+  "seconds_median": 0.09657
+}

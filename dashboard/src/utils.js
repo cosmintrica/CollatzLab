@@ -113,6 +113,31 @@ export function formatCompactTimestamp(value) {
   return `${dd} ${mon} ${yyyy} ${hh}:${min}`;
 }
 
+/** Human-readable duration from milliseconds (wall clock between started_at and finished_at). */
+export function formatDurationMs(ms) {
+  if (!Number.isFinite(ms) || ms < 0) return "";
+  const sec = Math.floor(ms / 1000);
+  if (sec < 1) return "<1s";
+  if (sec < 60) return `${sec}s`;
+  const m = Math.floor(sec / 60);
+  const s = sec % 60;
+  if (sec < 3600) {
+    return s ? `${m}m ${s}s` : `${m}m`;
+  }
+  const h = Math.floor(sec / 3600);
+  const m2 = Math.floor((sec % 3600) / 60);
+  return m2 ? `${h}h ${m2}m` : `${h}h`;
+}
+
+/** Wall time for a finished run; empty if timestamps missing or invalid. */
+export function formatRunWallDuration(startIso, endIso) {
+  if (!startIso || !endIso) return "";
+  const a = Date.parse(startIso);
+  const b = Date.parse(endIso);
+  if (!Number.isFinite(a) || !Number.isFinite(b) || b < a) return "";
+  return formatDurationMs(b - a);
+}
+
 export function formatRelativeTime(value) {
   if (!value) {
     return "unknown time";
@@ -418,7 +443,48 @@ export function countBy(items, getKey) {
   }, {});
 }
 
+/** Parse auto-generated PROMISING follow-up task bodies (see hypothesis.py). */
+export function parsePromisingFollowupDescription(description) {
+  const d = String(description || "");
+  if (!d.includes("[sandbox-promising-followup]")) {
+    return null;
+  }
+  const claimM = d.match(/claim_id=([^\s]+)/);
+  const claimId = claimM ? claimM[1].trim() : null;
+  let probeTitle = null;
+  const probeLabel = "Probe title:";
+  const probeIdx = d.indexOf(probeLabel);
+  if (probeIdx >= 0) {
+    const afterProbe = d.slice(probeIdx + probeLabel.length).trim();
+    probeTitle = afterProbe.split(/\r?\n/)[0].trim() || null;
+  }
+  const lines = d.split(/\r?\n/);
+  let inChecklist = false;
+  const checklistItems = [];
+  for (const line of lines) {
+    if (/^Checklist/i.test(line.trim())) {
+      inChecklist = true;
+      continue;
+    }
+    if (inChecklist) {
+      if (/^Claim id:/i.test(line.trim())) {
+        break;
+      }
+      const m = line.match(/^\s*(\d+)\.\s+(.+)$/);
+      if (m) {
+        checklistItems.push(m[2].trim());
+      }
+    }
+  }
+  return { claimId, probeTitle, checklistItems, fullText: d };
+}
+
 export function taskIntent(task) {
+  // Review / analysis tasks must stay "theory" even if the description mentions "re-run" or "range".
+  const kind = String(task?.kind || "").toLowerCase();
+  if (kind === "review" || kind === "analysis" || kind === "doc" || kind === "documentation") {
+    return "theory";
+  }
   const text = `${task?.title || ""} ${task?.description || ""}`.toLowerCase();
   if (
     task?.kind === "experiment" ||

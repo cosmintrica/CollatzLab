@@ -7,6 +7,9 @@ param(
   [switch]$WithWorker
 )
 
+# Optional (same as macOS): COLLATZ_STACK_CPU_WORKERS, COLLATZ_STACK_GPU_WORKERS (integers >=1).
+# Each CPU worker gets NUMBA_NUM_THREADS ≈ ceil(ProcessorCount / CPU workers).
+
 $ErrorActionPreference = "Stop"
 
 $root = Resolve-Path (Join-Path $PSScriptRoot "..")
@@ -283,8 +286,34 @@ function Start-Stack {
 
   $workers = @()
   if ($WithWorker) {
-    $workers += Start-ManagedWorker -Name "managed-worker-cpu" -Hardware "cpu" -PollInterval 5
-    $workers += Start-ManagedWorker -Name "managed-worker-gpu" -Hardware "gpu" -PollInterval 5
+    $cpuCount = 1
+    $gpuCount = 1
+    if ($env:COLLATZ_STACK_CPU_WORKERS -match '^\d+$') { $cpuCount = [int]$env:COLLATZ_STACK_CPU_WORKERS }
+    if ($env:COLLATZ_STACK_GPU_WORKERS -match '^\d+$') { $gpuCount = [int]$env:COLLATZ_STACK_GPU_WORKERS }
+    if ($cpuCount -lt 1) { $cpuCount = 1 }
+    if ($gpuCount -lt 1) { $gpuCount = 1 }
+    if ($cpuCount -gt 16) { throw "COLLATZ_STACK_CPU_WORKERS must be between 1 and 16." }
+    if ($gpuCount -gt 8) { throw "COLLATZ_STACK_GPU_WORKERS must be between 1 and 8." }
+
+    $cores = [Environment]::ProcessorCount
+    $threadsCpu = [int][Math]::Ceiling($cores / [double]$cpuCount)
+    if ($threadsCpu -lt 1) { $threadsCpu = 1 }
+    $threadsGpu = $cores
+    if ($gpuCount -gt 1) {
+      $threadsGpu = [int][Math]::Ceiling($cores / [double]$gpuCount)
+    }
+
+    for ($i = 1; $i -le $cpuCount; $i++) {
+      $env:NUMBA_NUM_THREADS = "$threadsCpu"
+      $cpuName = if ($cpuCount -eq 1) { "managed-worker-cpu" } else { "managed-worker-cpu-$i" }
+      $workers += Start-ManagedWorker -Name $cpuName -Hardware "cpu" -PollInterval 5
+    }
+    for ($i = 1; $i -le $gpuCount; $i++) {
+      $env:NUMBA_NUM_THREADS = "$threadsGpu"
+      $gpuName = if ($gpuCount -eq 1) { "managed-worker-gpu" } else { "managed-worker-gpu-$i" }
+      $workers += Start-ManagedWorker -Name $gpuName -Hardware "gpu" -PollInterval 5
+    }
+    Remove-Item Env:NUMBA_NUM_THREADS -ErrorAction SilentlyContinue
   }
 
   $state = [pscustomobject]@{
@@ -306,15 +335,21 @@ function Start-Stack {
   $workerHealthy = $true
   if ($WithWorker) {
     Start-Sleep -Seconds 2
-    $cpuWorker = $workers | Where-Object { $_.hardware -eq "cpu" } | Select-Object -First 1
-    $gpuWorker = $workers | Where-Object { $_.hardware -eq "gpu" } | Select-Object -First 1
-    $cpuHealthy = $null -ne $cpuWorker -and (Test-Pid ([int]$cpuWorker.pid))
-    $gpuHealthy = $null -eq $gpuWorker -or (Test-Pid ([int]$gpuWorker.pid))
+    $cpuWorkers = @($workers | Where-Object { $_.hardware -eq "cpu" })
+    $gpuWorkers = @($workers | Where-Object { $_.hardware -eq "gpu" })
+    $cpuHealthy = $true
+    foreach ($cw in $cpuWorkers) {
+      if (-not (Test-Pid ([int]$cw.pid))) { $cpuHealthy = $false }
+    }
     if (-not $cpuHealthy) {
       $workerHealthy = $false
     }
-    if (-not $gpuHealthy) {
-      Write-Warning "GPU worker did not stay alive. The stack will continue with CPU workers only."
+    $anyGpuDead = $false
+    foreach ($gw in $gpuWorkers) {
+      if (-not (Test-Pid ([int]$gw.pid))) { $anyGpuDead = $true }
+    }
+    if ($anyGpuDead) {
+      Write-Warning "One or more GPU workers did not stay alive. CPU workers keep running."
     }
   }
   if (-not ($backendHealthy -and $dashboardHealthy -and $workerHealthy)) {

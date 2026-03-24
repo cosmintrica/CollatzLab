@@ -36,6 +36,22 @@ The project remains open source, but the operational topology is centralized:
 - executes local compute;
 - uploads outputs, metadata, and checkpoints back to the coordinator.
 
+## Open source vs “who hosts the public site”
+
+**Open source** means the **license and availability of source code** others can inspect, rebuild, and fork (e.g. Apache-2.0). It does **not** require that your **production deployment**, secrets, or CI logs be public.
+
+- **Public monorepo** (backend + dashboard + worker in one public repo): strongest story for *“the UI I see is the same code as on GitHub”* — no suspicion of a hidden fork of the dashboard.
+- **Private hosting repo** (only Terraform, DNS, Vercel project config): compatible with an open source **application** repo; you are not hiding the app logic if the app code stays public elsewhere.
+- **Private application code** (dashboard closed): the project can still be “partially open source,” but visitors cannot verify that the live site matches any public artifact — easier to raise *appearance* concerns even if tampering would really happen on the **API/DB** side.
+
+**Record integrity** (accusations of manipulating results) is only weakly addressed by open-sourcing the frontend. What matters more:
+
+- coordinator + validation paths + DB rules are **auditable**;
+- important results are **reproducible** (parameters published, independent replay);
+- optional **exports / checkpoints / signed bundles** so third parties can mirror or diff history.
+
+So: **yes, you can centralize hosting and keep the project open source**; for **trust**, prefer **public source for all code that interprets or presents canonical data**, plus transparent **data policy** (exports, replay, quarantine rules already in this doc).
+
 ## Trust model
 
 Remote compute is useful, but it is not automatically trusted.
@@ -62,3 +78,7 @@ This gives the project both:
 4. Artifact/result upload
 5. Trust scoring and replay rules
 6. Multi-machine validation before promotion
+
+## See also
+
+- [`UI_SURFACE_AND_MONOREPO_PLAN.md`](./UI_SURFACE_AND_MONOREPO_PLAN.md) — how the **public dashboard** vs **worker console** share one repo (env-driven UI shell, phased builds, coordinator token scopes).

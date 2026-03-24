@@ -141,15 +141,34 @@ CREATE TABLE IF NOT EXISTS runtime_settings (
   value_json TEXT NOT NULL DEFAULT '{}',
   updated_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS metal_benchmark_runs (
+  id TEXT PRIMARY KEY,
+  created_at TEXT NOT NULL,
+  finished_at TEXT NOT NULL,
+  status TEXT NOT NULL,
+  kind TEXT NOT NULL DEFAULT 'metal_sieve_chunk',
+  params_json TEXT NOT NULL,
+  result_json TEXT,
+  error_message TEXT NOT NULL DEFAULT ''
+);
 """
 
 
 def connect(db_path: str) -> sqlite3.Connection:
+    """Open one SQLite connection (short-lived per repository operation).
+
+    - **WAL** allows concurrent readers while a writer commits; multiple workers
+      and the API can read without blocking checkpoints as much as in rollback mode.
+    - **busy_timeout** makes writers wait on lock contention instead of failing
+      immediately with ``database is locked`` (still finite — tune if needed).
+    """
     connection = sqlite3.connect(db_path)
     connection.row_factory = sqlite3.Row
     connection.execute("PRAGMA foreign_keys = ON;")
     connection.execute("PRAGMA journal_mode = WAL;")
-    connection.execute("PRAGMA busy_timeout = 5000;")
+    # 30s — multiple workers + API can contend on claim_next_run / checkpoints.
+    connection.execute("PRAGMA busy_timeout = 30000;")
     return connection
 
 
@@ -162,3 +181,17 @@ def ensure_schema_migrations(connection: sqlite3.Connection) -> None:
         connection.execute(
             "ALTER TABLE sources ADD COLUMN map_variant TEXT NOT NULL DEFAULT 'unspecified'"
         )
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS metal_benchmark_runs (
+          id TEXT PRIMARY KEY,
+          created_at TEXT NOT NULL,
+          finished_at TEXT NOT NULL,
+          status TEXT NOT NULL,
+          kind TEXT NOT NULL DEFAULT 'metal_sieve_chunk',
+          params_json TEXT NOT NULL,
+          result_json TEXT,
+          error_message TEXT NOT NULL DEFAULT ''
+        )
+        """
+    )

@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+from .runtime_bootstrap import ensure_darwin_duplicate_openmp_ok
+
+ensure_darwin_duplicate_openmp_ok()
+
 import uvicorn
 
 from .api import create_app

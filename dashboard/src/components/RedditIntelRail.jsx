@@ -17,7 +17,7 @@ export default memo(function RedditIntelRail({ feed, onImportPost, pendingKey })
   const fetchedAt = feed?.fetched_at ? formatTimestamp(feed.fetched_at) : "–";
 
   return (
-    <aside className="workspace-rail workspace-rail-right">
+    <aside id="collatz-reddit-rail" className="workspace-rail workspace-rail-right">
       <article className="panel reddit-rail-card">
         <div className="reddit-rail-head">
           <div>

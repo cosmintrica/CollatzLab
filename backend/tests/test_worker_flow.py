@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import json
+
 from collatz_lab import hardware, services
-from collatz_lab.hardware import discover_hardware, select_worker_execution_profile
+from collatz_lab.hardware import discover_hardware, nvidia as hardware_nvidia, select_worker_execution_profile
 from collatz_lab.repository import LabRepository
 from collatz_lab.schemas import RunStatus, WorkerStatus
 from collatz_lab.services import process_next_queued_run
@@ -15,10 +17,10 @@ def test_hardware_discovery_exposes_cpu_capability():
 
 
 def test_hardware_discovery_exposes_gpu_kernel_when_runtime_is_ready(monkeypatch):
-    monkeypatch.setattr(hardware, "gpu_execution_ready", lambda: True)
+    monkeypatch.setattr("collatz_lab.hardware.nvidia.cuda_gpu_execution_ready", lambda: True)
     monkeypatch.setattr(
-        hardware,
-        "_run_command",
+        hardware_nvidia,
+        "run_command",
         lambda command: "0, RTX 4060 Ti, 16380, 595.71",
     )
 
@@ -395,3 +397,14 @@ def test_api_can_enqueue_run_without_immediate_execution(settings):
     workers_response = client.get("/api/workers/capabilities")
     assert workers_response.status_code == 200
     assert any(item["kind"] == "cpu" for item in workers_response.json())
+
+
+def test_sandbox_cursor_loads_legacy_hypothesis_only_json(repository: LabRepository):
+    from collatz_lab.worker import _hypothesis_cursor_path, _load_sandbox_cursor
+
+    path = _hypothesis_cursor_path(repository, "legacy-worker")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"hypotheses_run": 11}), encoding="utf-8")
+    hr, kp = _load_sandbox_cursor(repository, "legacy-worker")
+    assert hr == 11
+    assert kp == 0

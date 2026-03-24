@@ -8,7 +8,7 @@ from pathlib import Path
 from .llm import generate_autopilot_plan
 from .repository import LabRepository, utc_now
 from .schemas import ArtifactKind, LLMAutopilotRun, LLMAutopilotStatus
-from .services import queue_continuous_verification_runs
+from .scheduling import queue_continuous_verification_runs
 from .task_execution import execute_supported_tasks
 
 

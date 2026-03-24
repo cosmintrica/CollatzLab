@@ -1,15 +1,22 @@
 from __future__ import annotations
 
+from .runtime_bootstrap import ensure_darwin_duplicate_openmp_ok
+
+ensure_darwin_duplicate_openmp_ok()
+
 import argparse
 import json
 import logging
+import sys
 from pathlib import Path
 
 from .config import Settings
 from .hardware import discover_hardware, validate_execution_request
+from .hardware.constants import CPU_SIEVE_KERNEL, GPU_SIEVE_KERNEL
 from .logutil import silence_numba_cuda_info
 from .repository import LabRepository
-from .services import execute_run, generate_report, validate_run
+from .services import execute_run, generate_report
+from .validation import validate_run
 from .worker import start_worker_loop
 
 
@@ -44,6 +51,36 @@ def build_parser() -> argparse.ArgumentParser:
     run_resume = run_sub.add_parser("resume", help="Resume an existing run")
     run_resume.add_argument("run_id")
     run_resume.add_argument("--checkpoint-interval", type=int, default=250)
+
+    run_release = run_sub.add_parser(
+        "release",
+        help="Move a stuck RUNNING run back to QUEUED (keeps checkpoint/metrics). "
+        "Stop the worker process first if it is hung.",
+    )
+    run_release.add_argument("run_id", help="Run id, e.g. COL-0022")
+    run_release.add_argument(
+        "--note",
+        default="",
+        help="Append to run summary (default: short recovery message).",
+    )
+    run_release.add_argument(
+        "--migrate-cpu-sieve",
+        action="store_true",
+        help=f"If the run was {GPU_SIEVE_KERNEL}, switch to {CPU_SIEVE_KERNEL} on hardware cpu "
+        "(same odd-sieve semantics; continue from checkpoint). Run must be released to queued first — "
+        "this flag performs release then migration in one step.",
+    )
+
+    run_append = run_sub.add_parser(
+        "append-summary",
+        help="Append text to a run's summary (e.g. incident notes; does not change status).",
+    )
+    run_append.add_argument("run_id", help="Run id, e.g. COL-0254")
+    run_append.add_argument(
+        "--text",
+        required=True,
+        help="Text to append (after a space if the summary was non-empty).",
+    )
 
     validate_parser = subparsers.add_parser("validate", help="Validate a run")
     validate_parser.add_argument("run_id")
@@ -138,6 +175,29 @@ def main() -> None:
 
     if args.command == "run" and args.run_command == "resume":
         run = execute_run(repository, args.run_id, checkpoint_interval=args.checkpoint_interval)
+        print(run.model_dump_json(indent=2))
+        return
+
+    if args.command == "run" and args.run_command == "release":
+        rid = args.run_id
+        run = repository.release_running_run_to_queue(rid, note=args.note)
+        if args.migrate_cpu_sieve:
+            if run.kernel != GPU_SIEVE_KERNEL:
+                print(
+                    f"warning: run kernel is {run.kernel!r}, not {GPU_SIEVE_KERNEL!r}; "
+                    f"still switching to {CPU_SIEVE_KERNEL} / cpu.",
+                    file=sys.stderr,
+                )
+            run = repository.set_run_kernel_hardware(
+                rid,
+                kernel=CPU_SIEVE_KERNEL,
+                hardware="cpu",
+            )
+        print(run.model_dump_json(indent=2))
+        return
+
+    if args.command == "run" and args.run_command == "append-summary":
+        run = repository.append_run_summary(args.run_id, args.text)
         print(run.model_dump_json(indent=2))
         return
 

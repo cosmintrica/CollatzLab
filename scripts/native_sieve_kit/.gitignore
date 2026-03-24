@@ -1,0 +1,6 @@
+sieve_descent
+metal/metal_lab_sieve_verify
+metal/metal_sieve_verify
+metal/metal_sieve_chunk
+metal/*.air
+metal/*.metallib

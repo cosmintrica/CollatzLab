@@ -1,3 +1,5 @@
+import { formatRunWallDuration } from "./utils.js";
+
 export function firstPositiveInteger(...values) {
   for (const value of values) {
     const parsed = Number(value);
@@ -214,34 +216,95 @@ export function buildRecordTape(run) {
     });
 }
 
-export function runProgress(run) {
-  if (!run) {
-    return { processed: 0, total: 0, percent: 0 };
-  }
-  const total = Math.max(0, Number(run.range_end) - Number(run.range_start) + 1);
-  const processed = Math.max(0, Number(run.metrics?.processed || run.checkpoint?.last_processed || 0));
-  const percent = total > 0 ? Math.min(100, (processed / total) * 100) : 0;
-  return { processed, total, percent };
+/** Kernels whose ``metrics.processed`` counts odd seeds only (not full linear range width). */
+const SIEVE_LIKE_KERNELS = new Set(["cpu-sieve", "gpu-sieve", "cpu-barina"]);
+
+export function sieveLikeKernel(kernel) {
+  const k = String(kernel || "").toLowerCase().trim();
+  return SIEVE_LIKE_KERNELS.has(k);
 }
 
-export function runLiveDetails(run) {
-  const p = runProgress(run);
-  if (!run) return { ...p, speed: 0, eta: "", currentSeed: 0, maxTST: null, maxExc: null };
+/** Inclusive range — count of odd seeds (same contract as backend sieve metrics). */
+export function sieveOddSeedTotal(rangeStart, rangeEnd) {
+  const s = Number(rangeStart);
+  const e = Number(rangeEnd);
+  if (!Number.isFinite(s) || !Number.isFinite(e) || e < s) return 0;
+  const firstOdd = s % 2 === 1 ? s : s + 1;
+  if (firstOdd > e) return 0;
+  return Math.floor((e - firstOdd) / 2) + 1;
+}
 
-  // Speed + ETA from elapsed time
-  let speed = 0;
+function linearRangeTotal(rangeStart, rangeEnd) {
+  const s = Number(rangeStart);
+  const e = Number(rangeEnd);
+  if (!Number.isFinite(s) || !Number.isFinite(e) || e < s) return 0;
+  return e - s + 1;
+}
+
+export function runProgress(run) {
+  if (!run) {
+    return { processed: 0, total: 0, percent: 0, seedUnit: "values", linearSpan: null };
+  }
+  const kernel = run.kernel || "";
+  const oddSieve = sieveLikeKernel(kernel);
+  const linearTotal = linearRangeTotal(run.range_start, run.range_end);
+  const total = oddSieve ? sieveOddSeedTotal(run.range_start, run.range_end) : linearTotal;
+  let processed = 0;
+  if (run.metrics != null && run.metrics.processed != null && run.metrics.processed !== "") {
+    processed = Math.max(0, Number(run.metrics.processed));
+  } else if (!oddSieve && run.checkpoint?.last_processed != null && run.checkpoint.last_processed !== "") {
+    processed = Math.max(0, Number(run.checkpoint.last_processed));
+  }
+  const percent = total > 0 ? Math.min(100, (processed / total) * 100) : 0;
+  return {
+    processed,
+    total,
+    percent,
+    seedUnit: oddSieve ? "odd seeds" : "values",
+    /** For sieve-like kernels: inclusive linear integer count (≈2× odd seeds). */
+    linearSpan: oddSieve ? linearTotal : null,
+  };
+}
+
+function formatEta(secs) {
+  if (secs < 60) return `${Math.round(secs)}s`;
+  if (secs < 3600) return `${Math.round(secs / 60)}m`;
+  if (secs < 86400) return `${(secs / 3600).toFixed(1)}h`;
+  return `${(secs / 86400).toFixed(1)}d`;
+}
+
+/**
+ * @param {object} run
+ * @param {{ pollRef?: { current: Record<string, { p: number, t: number }> } }} | undefined} options
+ *        pollRef — updated each call; used to estimate short-term (between polls) throughput.
+ */
+export function runLiveDetails(run, options) {
+  const p = runProgress(run);
+  if (!run) return { ...p, speed: 0, speedAvg: 0, speedRecent: 0, eta: "", currentSeed: 0, maxTST: null, maxExc: null };
+
+  let speedAvg = 0;
+  let speedRecent = 0;
   let eta = "";
+  const nowSec = Date.now() / 1000;
+
   if (run.started_at && p.processed > 0) {
-    const elapsed = (Date.now() - new Date(run.started_at).getTime()) / 1000;
+    const elapsed = nowSec - new Date(run.started_at).getTime() / 1000;
     if (elapsed > 0) {
-      speed = p.processed / elapsed;
+      speedAvg = p.processed / elapsed;
+      const pollRef = options?.pollRef;
+      if (pollRef?.current && run.id) {
+        const prev = pollRef.current[run.id];
+        if (prev && nowSec > prev.t + 0.2 && p.processed > prev.p) {
+          speedRecent = (p.processed - prev.p) / (nowSec - prev.t);
+        }
+        pollRef.current[run.id] = { p: p.processed, t: nowSec };
+      }
+
       const remaining = p.total - p.processed;
-      if (speed > 0 && remaining > 0) {
-        const secs = remaining / speed;
-        if (secs < 60) eta = `${Math.round(secs)}s`;
-        else if (secs < 3600) eta = `${Math.round(secs / 60)}m`;
-        else if (secs < 86400) eta = `${(secs / 3600).toFixed(1)}h`;
-        else eta = `${(secs / 86400).toFixed(1)}d`;
+      const etaSpeed =
+        speedRecent > 0 && speedRecent >= speedAvg * 0.15 ? speedRecent : speedAvg;
+      if (etaSpeed > 0 && remaining > 0) {
+        eta = formatEta(remaining / etaSpeed);
       } else if (remaining <= 0) {
         eta = "done";
       }
@@ -252,7 +315,36 @@ export function runLiveDetails(run) {
   const maxTST = run.metrics?.max_total_stopping_time || null;
   const maxExc = run.metrics?.max_excursion || null;
 
-  return { ...p, speed, eta, currentSeed, maxTST, maxExc };
+  return {
+    ...p,
+    speed: speedRecent > 0 ? speedRecent : speedAvg,
+    speedAvg,
+    speedRecent,
+    eta,
+    currentSeed,
+    maxTST,
+    maxExc,
+  };
+}
+
+/**
+ * Tiny suffix for run lists: wall duration when finished, or live ETA when running.
+ * @param {object | null | undefined} run
+ * @param {{ pollRef?: { current: Record<string, { p: number, t: number }> } }} | undefined} options
+ */
+export function runTimingMicroSuffix(run, options) {
+  if (!run) return "";
+  if (run.started_at && run.finished_at) {
+    const wall = formatRunWallDuration(run.started_at, run.finished_at);
+    return wall ? ` · ${wall}` : "";
+  }
+  if (run.status === "running" && run.started_at) {
+    const { eta } = runLiveDetails(run, options);
+    if (eta && eta !== "done") {
+      return ` · ETA ~${eta}`;
+    }
+  }
+  return "";
 }
 
 export function describeCapability(capability) {

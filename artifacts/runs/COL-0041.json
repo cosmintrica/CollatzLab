@@ -1,78 +1,78 @@
 {
-  "processed": 100000,
-  "last_processed": 100000,
+  "processed": 24000000000,
+  "last_processed": 450000002000,
   "max_total_stopping_time": {
-    "n": 77031,
-    "value": 350
+    "n": 425188680731,
+    "value": 833
   },
   "max_stopping_time": {
-    "n": 35655,
-    "value": 220
+    "n": 425188680731,
+    "value": 833
   },
   "max_excursion": {
-    "n": 77671,
-    "value": 1570824736
+    "n": 446559217279,
+    "value": 39533276910778060381072
   },
   "sample_records": [
     {
       "metric": "max_total_stopping_time",
-      "n": 1,
-      "value": 0
+      "n": 402073437631,
+      "value": 621
     },
     {
       "metric": "max_stopping_time",
-      "n": 1,
-      "value": 0
+      "n": 402073437631,
+      "value": 621
     },
     {
       "metric": "max_excursion",
-      "n": 1,
-      "value": 1
+      "n": 402015743847,
+      "value": 9223372036854775807
     },
     {
       "metric": "max_total_stopping_time",
-      "n": 2,
-      "value": 1
+      "n": 402453795487,
+      "value": 567
     },
     {
       "metric": "max_stopping_time",
-      "n": 2,
-      "value": 1
+      "n": 402453795487,
+      "value": 567
     },
     {
       "metric": "max_excursion",
-      "n": 2,
-      "value": 2
+      "n": 402298659455,
+      "value": 9223372036854775807
     },
     {
       "metric": "max_total_stopping_time",
-      "n": 3,
-      "value": 7
+      "n": 402700953599,
+      "value": 611
     },
     {
       "metric": "max_stopping_time",
-      "n": 3,
-      "value": 6
+      "n": 402700953599,
+      "value": 611
     },
     {
       "metric": "max_excursion",
-      "n": 3,
-      "value": 16
+      "n": 402500997959,
+      "value": 9223372036854775807
     },
     {
       "metric": "max_total_stopping_time",
-      "n": 6,
-      "value": 8
-    },
-    {
-      "metric": "max_total_stopping_time",
-      "n": 7,
-      "value": 16
+      "n": 402819880927,
+      "value": 569
     },
     {
       "metric": "max_stopping_time",
-      "n": 7,
-      "value": 11
+      "n": 402819880927,
+      "value": 569
+    },
+    {
+      "metric": "max_excursion",
+      "n": 402797958939,
+      "value": 9223372036854775807
     }
   ]
 }

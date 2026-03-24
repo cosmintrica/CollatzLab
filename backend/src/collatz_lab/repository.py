@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import platform
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -38,6 +39,21 @@ from .schemas import (
     Worker,
     WorkerStatus,
 )
+
+
+def default_compute_profile_seed_payload() -> dict[str, int]:
+    """Default compute profile row when the DB is first seeded.
+
+    On macOS, **GPU lane starts at 0%** so autopilot does not enqueue GPU work until you
+    raise it — Apple Silicon shares unified memory and display compositing with the GPU,
+    so heavy ``gpu-sieve`` / MPS / Metal can make the whole machine feel sluggish.
+    Linux/Windows keep 100% until the user changes it (typical discrete-GPU desktops).
+    """
+    return {
+        "system_percent": 100,
+        "cpu_percent": 100,
+        "gpu_percent": 0 if platform.system() == "Darwin" else 100,
+    }
 
 
 DEFAULT_DIRECTIONS: tuple[dict[str, str], ...] = (
@@ -221,6 +237,9 @@ class LabRepository:
         self.seed_initial_tasks()
 
     def _migrate_schema(self, conn) -> None:
+        from .database import ensure_schema_migrations
+
+        ensure_schema_migrations(conn)
         source_columns = {
             row["name"]
             for row in conn.execute("PRAGMA table_info(sources)").fetchall()
@@ -287,13 +306,7 @@ class LabRepository:
                     "INSERT INTO runtime_settings(key, value_json, updated_at) VALUES (?, ?, ?)",
                     (
                         "compute_profile",
-                        json.dumps(
-                            {
-                                "system_percent": 100,
-                                "cpu_percent": 100,
-                                "gpu_percent": 100,
-                            }
-                        ),
+                        json.dumps(default_compute_profile_seed_payload()),
                         timestamp,
                     ),
                 )
@@ -608,6 +621,16 @@ class LabRepository:
             conn.commit()
         return self.get_run(run_id)
 
+    def append_run_summary(self, run_id: str, text: str) -> Run:
+        """Append a note to the existing summary (no status change)."""
+        run = self.get_run(run_id)
+        suffix = (text or "").strip()
+        if not suffix:
+            return run
+        base = (run.summary or "").rstrip()
+        new_summary = f"{base} {suffix}".strip() if base else suffix
+        return self.update_run(run_id, summary=new_summary)
+
     def delete_run(self, run_id: str) -> None:
         with connect(str(self.settings.db_path)) as conn:
             conn.execute("DELETE FROM runs WHERE id = ?", (run_id,))
@@ -644,6 +667,80 @@ class LabRepository:
             conn.commit()
         return self.get_worker(worker_id)
 
+    def release_running_run_to_queue(self, run_id: str, *, note: str = "") -> Run:
+        """Clear worker ownership and move a RUNNING run back to QUEUED.
+
+        Preserves ``checkpoint`` and ``metrics`` so execution resumes from
+        ``checkpoint["next_value"]`` on the next claim. Use when a worker is
+        stuck (e.g. hung MPS batch) after you have stopped the worker process.
+        """
+        run = self.get_run(run_id)
+        if run.status != RunStatus.RUNNING:
+            raise ValueError(
+                f"release_running_run_to_queue: run {run_id} is {run.status.value}, expected running."
+            )
+        timestamp = utc_now()
+        suffix = (note or "").strip() or "Released to queue; resume from last checkpoint."
+        base_summary = (run.summary or "").strip()
+        new_summary = f"{base_summary} {suffix}".strip() if base_summary else suffix
+
+        with connect(str(self.settings.db_path)) as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute(
+                """
+                UPDATE workers
+                SET status = ?, current_run_id = ?, updated_at = ?, last_heartbeat_at = ?
+                WHERE current_run_id = ?
+                """,
+                (
+                    WorkerStatus.IDLE.value,
+                    None,
+                    timestamp,
+                    timestamp,
+                    run_id,
+                ),
+            )
+            cur = conn.execute(
+                """
+                UPDATE runs
+                SET status = ?, summary = ?
+                WHERE id = ? AND status = ?
+                """,
+                (
+                    RunStatus.QUEUED.value,
+                    new_summary,
+                    run_id,
+                    RunStatus.RUNNING.value,
+                ),
+            )
+            if cur.rowcount != 1:
+                conn.rollback()
+                raise RuntimeError(
+                    f"release_running_run_to_queue: expected to update one RUNNING row for {run_id}."
+                )
+            conn.commit()
+        return self.get_run(run_id)
+
+    def set_run_kernel_hardware(self, run_id: str, *, kernel: str, hardware: str) -> Run:
+        """Change execution target while the run is QUEUED (e.g. gpu-sieve → cpu-sieve)."""
+        run = self.get_run(run_id)
+        if run.status != RunStatus.QUEUED:
+            raise ValueError(
+                f"set_run_kernel_hardware: run {run_id} must be queued (is {run.status.value})."
+            )
+
+        with connect(str(self.settings.db_path)) as conn:
+            conn.execute(
+                """
+                UPDATE runs
+                SET kernel = ?, hardware = ?
+                WHERE id = ? AND status = ?
+                """,
+                (kernel, hardware, run_id, RunStatus.QUEUED.value),
+            )
+            conn.commit()
+        return self.get_run(run_id)
+
     def requeue_orphaned_runs(self) -> int:
         recovery_note = "Recovered after worker restart; queued to resume from the last checkpoint."
         with connect(str(self.settings.db_path)) as conn:
@@ -664,7 +761,11 @@ class LabRepository:
                 return 0
             for row in rows:
                 summary = (row["summary"] or "").strip()
-                next_summary = recovery_note if not summary else f"{summary} {recovery_note}"
+                # Avoid appending the same recovery sentence on every stack/worker restart (noisy UI).
+                if recovery_note in summary:
+                    next_summary = summary
+                else:
+                    next_summary = recovery_note if not summary else f"{summary} {recovery_note}"
                 conn.execute(
                     """
                     UPDATE runs
@@ -725,6 +826,20 @@ class LabRepository:
         )
         return self.get_claim(claim_id)
 
+    def _enqueue_sandbox_promising_followup_if_needed(self, claim_id: str) -> None:
+        """When a hypothesis-sandbox claim becomes promising, ensure the checklist task exists (idempotent)."""
+        claim = self.get_claim(claim_id)
+        if claim.direction_slug != "hypothesis-sandbox":
+            return
+        st = claim.status.value if hasattr(claim.status, "value") else str(claim.status)
+        if st != "promising":
+            return
+        from .hypothesis import enqueue_sandbox_promising_followup_task
+
+        enqueue_sandbox_promising_followup_task(
+            self, claim_id=claim.id, claim_title=claim.title
+        )
+
     def update_claim_status(self, claim_id: str, status: str) -> Claim:
         with connect(str(self.settings.db_path)) as conn:
             conn.execute(
@@ -732,7 +847,9 @@ class LabRepository:
                 (status, utc_now(), claim_id),
             )
             conn.commit()
-        return self.get_claim(claim_id)
+        claim = self.get_claim(claim_id)
+        self._enqueue_sandbox_promising_followup_if_needed(claim_id)
+        return claim
 
     def update_claim(
         self,
@@ -760,7 +877,10 @@ class LabRepository:
                 values,
             )
             conn.commit()
-        return self.get_claim(claim_id)
+        claim = self.get_claim(claim_id)
+        if status is not None:
+            self._enqueue_sandbox_promising_followup_if_needed(claim_id)
+        return claim
 
     def list_fallacy_tags(self) -> list[FallacyTagInfo]:
         return list(FALLACY_TAG_CATALOG)
@@ -1373,11 +1493,49 @@ class LabRepository:
         """
 
         with connect(str(self.settings.db_path)) as conn:
-            row = conn.execute(
-                query,
-                [RunStatus.QUEUED.value, *supported_hardware, *supported_kernels],
-            ).fetchone()
-            if row is None:
+            # Reserve write lock up front so two workers cannot both pass the QUEUED
+            # SELECT and then race the same row (WAL still benefits read-heavy paths).
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                row = conn.execute(
+                    query,
+                    [RunStatus.QUEUED.value, *supported_hardware, *supported_kernels],
+                ).fetchone()
+                if row is None:
+                    conn.execute(
+                        """
+                        UPDATE workers
+                        SET status = ?, current_run_id = ?, updated_at = ?, last_heartbeat_at = ?
+                        WHERE id = ?
+                        """,
+                        (
+                            WorkerStatus.IDLE.value,
+                            None,
+                            timestamp,
+                            timestamp,
+                            worker_id,
+                        ),
+                    )
+                    conn.commit()
+                    return None
+
+                updated = conn.execute(
+                    """
+                    UPDATE runs
+                    SET status = ?, started_at = ?
+                    WHERE id = ? AND status = ?
+                    """,
+                    (
+                        RunStatus.RUNNING.value,
+                        timestamp,
+                        row["id"],
+                        RunStatus.QUEUED.value,
+                    ),
+                )
+                if updated.rowcount != 1:
+                    conn.rollback()
+                    return None
+
                 conn.execute(
                     """
                     UPDATE workers
@@ -1385,50 +1543,188 @@ class LabRepository:
                     WHERE id = ?
                     """,
                     (
-                        WorkerStatus.IDLE.value,
-                        None,
+                        WorkerStatus.RUNNING.value,
+                        row["id"],
                         timestamp,
                         timestamp,
                         worker_id,
                     ),
                 )
                 conn.commit()
-                return None
-
-            updated = conn.execute(
-                """
-                UPDATE runs
-                SET status = ?, started_at = ?
-                WHERE id = ? AND status = ?
-                """,
-                (
-                    RunStatus.RUNNING.value,
-                    timestamp,
-                    row["id"],
-                    RunStatus.QUEUED.value,
-                ),
-            )
-            if updated.rowcount != 1:
+            except Exception:
                 conn.rollback()
-                return None
+                raise
 
+        return self.get_run(row["id"])
+
+    def save_metal_benchmark_run(
+        self,
+        *,
+        job_id: str,
+        created_at: str,
+        finished_at: str,
+        status: str,
+        params_json: str,
+        result_json: str | None,
+        error_message: str,
+    ) -> None:
+        """Persist one Metal chunk sweep result (local dashboard / phase-1 history)."""
+        with connect(str(self.settings.db_path)) as conn:
             conn.execute(
                 """
-                UPDATE workers
-                SET status = ?, current_run_id = ?, updated_at = ?, last_heartbeat_at = ?
-                WHERE id = ?
+                INSERT INTO metal_benchmark_runs(
+                  id, created_at, finished_at, status, kind,
+                  params_json, result_json, error_message
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
-                    WorkerStatus.RUNNING.value,
-                    row["id"],
-                    timestamp,
-                    timestamp,
-                    worker_id,
+                    job_id,
+                    created_at,
+                    finished_at,
+                    status,
+                    "metal_sieve_chunk",
+                    params_json,
+                    result_json,
+                    error_message or "",
                 ),
             )
             conn.commit()
 
-        return self.get_run(row["id"])
+    def list_metal_benchmark_runs(self, *, limit: int = 25) -> list[dict]:
+        cap = max(1, min(100, int(limit)))
+        with connect(str(self.settings.db_path)) as conn:
+            rows = conn.execute(
+                """
+                SELECT id, created_at, finished_at, status, params_json, result_json, error_message
+                FROM metal_benchmark_runs
+                ORDER BY finished_at DESC
+                LIMIT ?
+                """,
+                (cap,),
+            ).fetchall()
+        out: list[dict] = []
+        for row in rows:
+            summary: dict | None = None
+            if row["result_json"]:
+                try:
+                    parsed = json.loads(row["result_json"])
+                    w = parsed.get("winner") or {}
+                    summary = {
+                        "winner_chunk": w.get("metal_chunk_size"),
+                        "winner_m_per_s": w.get("odd_per_sec_millions"),
+                        "parity_ok": parsed.get("small_range_parity_ok"),
+                        "calibration_written": parsed.get("calibration_written"),
+                    }
+                except (json.JSONDecodeError, TypeError):
+                    summary = None
+            out.append(
+                {
+                    "id": row["id"],
+                    "created_at": row["created_at"],
+                    "finished_at": row["finished_at"],
+                    "status": row["status"],
+                    "params_json": row["params_json"],
+                    "summary": summary,
+                    "error_message": row["error_message"] or None,
+                }
+            )
+        return out
+
+    def list_metal_benchmark_hall_of_fame(
+        self, *, platform: str, limit: int = 25
+    ) -> list[dict]:
+        """Ranked completed Metal chunk runs by winner throughput, filtered by ``result.platform``."""
+        allowed = frozenset({"Darwin", "Linux", "Windows"})
+        plat_key = platform if platform in allowed else "Darwin"
+        cap = max(1, min(100, int(limit)))
+        with connect(str(self.settings.db_path)) as conn:
+            rows = conn.execute(
+                """
+                SELECT id, finished_at, status, params_json, result_json
+                FROM metal_benchmark_runs
+                WHERE status = 'completed'
+                  AND result_json IS NOT NULL
+                  AND TRIM(result_json) != ''
+                ORDER BY finished_at DESC
+                LIMIT 2000
+                """
+            ).fetchall()
+        raw: list[dict] = []
+        for row in rows:
+            try:
+                res = json.loads(row["result_json"])
+            except (json.JSONDecodeError, TypeError):
+                continue
+            winner = res.get("winner") or {}
+            mps = winner.get("odd_per_sec_millions")
+            if mps is None:
+                continue
+            try:
+                score = float(mps)
+            except (TypeError, ValueError):
+                continue
+            res_platform = res.get("platform") or "Unknown"
+            if res_platform != plat_key:
+                continue
+            params_obj: dict = {}
+            if row["params_json"]:
+                try:
+                    params_obj = json.loads(row["params_json"])
+                except json.JSONDecodeError:
+                    params_obj = {}
+            interval = res.get("interval") or {}
+            raw.append(
+                {
+                    "id": row["id"],
+                    "finished_at": row["finished_at"],
+                    "platform": res_platform,
+                    "throughput_m_per_s": round(score, 4),
+                    "chunk_size": winner.get("metal_chunk_size"),
+                    "linear_end": interval.get("end"),
+                    "quick": bool(params_obj.get("quick", True)),
+                    "parity_ok": res.get("small_range_parity_ok"),
+                }
+            )
+        raw.sort(key=lambda e: e["throughput_m_per_s"], reverse=True)
+        ranked: list[dict] = []
+        for i, item in enumerate(raw[:cap], start=1):
+            entry = dict(item)
+            entry["rank"] = i
+            ranked.append(entry)
+        return ranked
+
+    def get_metal_benchmark_run(self, job_id: str) -> dict | None:
+        with connect(str(self.settings.db_path)) as conn:
+            row = conn.execute(
+                """
+                SELECT id, created_at, finished_at, status, params_json, result_json, error_message
+                FROM metal_benchmark_runs WHERE id = ?
+                """,
+                (job_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        result = None
+        if row["result_json"]:
+            try:
+                result = json.loads(row["result_json"])
+            except json.JSONDecodeError:
+                result = None
+        params_obj: dict = {}
+        if row["params_json"]:
+            try:
+                params_obj = json.loads(row["params_json"])
+            except json.JSONDecodeError:
+                params_obj = {}
+        return {
+            "id": row["id"],
+            "created_at": row["created_at"],
+            "finished_at": row["finished_at"],
+            "status": row["status"],
+            "params": params_obj,
+            "result": result,
+            "error_message": row["error_message"] or None,
+        }
 
     def summary(self) -> DashboardSummary:
         with connect(str(self.settings.db_path)) as conn:

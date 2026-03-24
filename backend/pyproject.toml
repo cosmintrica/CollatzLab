@@ -7,7 +7,7 @@ name = "collatz-lab"
 version = "0.1.0"
 description = "Local-first research lab for Collatz exploration."
 readme = "README.md"
-requires-python = ">=3.13"
+requires-python = ">=3.11,<3.14"
 dependencies = [
   "fastapi>=0.116,<1",
   "numpy>=2.2,<3",
@@ -25,6 +25,12 @@ gpu = [
   "nvidia-cuda-runtime-cu12>=12.4,<13",
   "nvidia-cuda-nvcc-cu12>=12.4,<13",
   "nvidia-nvvm>=13,<14"
+]
+system = [
+  "psutil>=6,<7"
+]
+mps = [
+  "torch>=2.2,<3"
 ]
 
 [project.scripts]

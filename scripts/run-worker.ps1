@@ -20,7 +20,10 @@ $env:COLLATZ_CPU_PARALLEL_BATCH_SIZE = "250000000"
 $env:COLLATZ_CPU_PARALLEL_ODD_BATCH_SIZE = "500000000"
 $env:COLLATZ_GPU_BATCH_SIZE = "500000000"
 $env:COLLATZ_GPU_THREADS_PER_BLOCK = "256"
-$env:NUMBA_NUM_THREADS = [string]([Environment]::ProcessorCount)
+# Allow dev-stack / mac stack to cap threads per worker when several CPU workers run in parallel.
+if (-not $env:NUMBA_NUM_THREADS -or $env:NUMBA_NUM_THREADS -eq "") {
+  $env:NUMBA_NUM_THREADS = [string]([Environment]::ProcessorCount)
+}
 $env:PYTHONUNBUFFERED = "1"
 
 $backendSrc = Join-Path $root "backend\src"
@@ -30,4 +33,9 @@ if ($env:PYTHONPATH) {
   $env:PYTHONPATH = $backendSrc
 }
 
-python -m collatz_lab.cli worker start --name $Name --hardware $Hardware --poll-interval $PollInterval
+$venvPy = Join-Path $root ".venv\Scripts\python.exe"
+if (Test-Path $venvPy) {
+  & $venvPy -m collatz_lab.cli worker start --name $Name --hardware $Hardware --poll-interval $PollInterval
+} else {
+  python -m collatz_lab.cli worker start --name $Name --hardware $Hardware --poll-interval $PollInterval
+}

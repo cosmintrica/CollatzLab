@@ -26,7 +26,7 @@ export async function readOptionalJson(url) {
   }
 }
 
-export async function postJson(url, payload) {
+export async function postJson(url, payload, timeoutMs = 30_000) {
   const options = {
     method: "POST",
     headers: {}
@@ -35,7 +35,7 @@ export async function postJson(url, payload) {
     options.headers["Content-Type"] = "application/json";
     options.body = JSON.stringify(payload);
   }
-  const response = await fetchWithTimeout(url, options, 30_000);
+  const response = await fetchWithTimeout(url, options, timeoutMs);
   if (!response.ok) {
     let message = `Request failed for ${url}`;
     try {

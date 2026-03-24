@@ -36,7 +36,8 @@ class RunStatus(StrEnum):
 # accidentally move a run backwards (e.g. COMPLETED → QUEUED).
 VALID_RUN_TRANSITIONS: dict[RunStatus, frozenset[RunStatus]] = {
     RunStatus.QUEUED: frozenset({RunStatus.RUNNING, RunStatus.COMPLETED, RunStatus.FAILED}),
-    RunStatus.RUNNING: frozenset({RunStatus.COMPLETED, RunStatus.FAILED}),
+    # RUNNING → QUEUED: operator recovery (stuck GPU, hung worker) while keeping checkpoint/metrics.
+    RunStatus.RUNNING: frozenset({RunStatus.QUEUED, RunStatus.COMPLETED, RunStatus.FAILED}),
     RunStatus.COMPLETED: frozenset({RunStatus.VALIDATED, RunStatus.FAILED}),
     RunStatus.VALIDATED: frozenset(),
     RunStatus.FAILED: frozenset({RunStatus.QUEUED}),

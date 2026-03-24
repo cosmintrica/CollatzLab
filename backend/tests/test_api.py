@@ -393,3 +393,26 @@ def test_api_llm_autopilot_run(settings: Settings, monkeypatch):
     assert payload["applied"] is True
     assert len(payload["applied_task_ids"]) == 1
     assert payload["report_artifact_id"] == "COL-1000"
+
+
+def test_api_workers_native_stack(settings: Settings):
+    app = create_app(settings)
+    client = TestClient(app)
+    r = client.get("/api/workers/native-stack")
+    assert r.status_code == 200
+    body = r.json()
+    assert "cpu_sieve_native" in body
+    assert "gpu_sieve_metal" in body
+    assert "backend_mode" in body["cpu_sieve_native"]
+    assert "backend_mode" in body["gpu_sieve_metal"]
+
+
+def test_api_validation_contract(settings: Settings):
+    app = create_app(settings)
+    client = TestClient(app)
+    r = client.get("/api/validation/contract")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["scope"] == "platform_wide"
+    assert "exact_arithmetic" in body
+    assert "metrics_descent_direct" in body["exact_arithmetic"]["primary_function"]

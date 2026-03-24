@@ -5,6 +5,10 @@
     "dashboard:dev": "npm --prefix dashboard run dev",
     "dashboard:build": "npm --prefix dashboard run build",
     "backend:test": "pytest backend/tests",
+    "verify:platform": "bash scripts/verify-platform.sh",
+    "verify:platform:full": "bash scripts/verify-platform.sh --full",
+    "verify:platform:win": "powershell -ExecutionPolicy Bypass -File scripts/verify-platform.ps1",
+    "verify:platform:win:full": "powershell -ExecutionPolicy Bypass -File scripts/verify-platform.ps1 -Full",
     "stack:start": "powershell -ExecutionPolicy Bypass -File .\\scripts\\dev-stack.ps1 start",
     "stack:start:worker": "powershell -ExecutionPolicy Bypass -File .\\scripts\\dev-stack.ps1 start -WithWorker",
     "stack:start:workers": "powershell -ExecutionPolicy Bypass -File .\\scripts\\dev-stack.ps1 start -WithWorker",
@@ -17,6 +21,12 @@
     "stack:restart:worker": "powershell -ExecutionPolicy Bypass -File .\\scripts\\dev-stack.ps1 restart -WithWorker",
     "stack:restart:workers": "powershell -ExecutionPolicy Bypass -File .\\scripts\\dev-stack.ps1 restart -WithWorker",
     "stack:restart:vite": "powershell -ExecutionPolicy Bypass -File .\\scripts\\dev-stack.ps1 restart -FrontendMode vite",
-    "stack:status": "powershell -ExecutionPolicy Bypass -File .\\scripts\\dev-stack.ps1 status"
+    "stack:status": "powershell -ExecutionPolicy Bypass -File .\\scripts\\dev-stack.ps1 status",
+    "stack:mac:start": "bash scripts/mac-dev-stack.sh start",
+    "stack:mac:stop": "bash scripts/mac-dev-stack.sh stop",
+    "stack:mac:restart": "bash scripts/mac-dev-stack.sh restart",
+    "stack:mac:status": "bash scripts/mac-dev-stack.sh status",
+    "bench:metal-chunk": "env KMP_DUPLICATE_LIB_OK=TRUE PYTHONPATH=backend/src ./.venv/bin/python scripts/profile_metal_sieve_chunk.py --quick --reps 5 --write-calibration",
+    "bench:metal-chunk:print": "env KMP_DUPLICATE_LIB_OK=TRUE PYTHONPATH=backend/src ./.venv/bin/python scripts/profile_metal_sieve_chunk.py --print-auto"
   }
 }

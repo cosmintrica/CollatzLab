@@ -7,6 +7,8 @@ export const endpoints = {
   runs: `${apiBase}/api/runs`,
   claims: `${apiBase}/api/claims`,
   hypotheses: `${apiBase}/api/hypotheses`,
+  hypothesisBattery: `${apiBase}/api/hypotheses/battery`,
+  hypothesisBatteryStability: `${apiBase}/api/hypotheses/battery/stability`,
   claimRunLinks: `${apiBase}/api/claim-run-links`,
   linkClaimRun: `${apiBase}/api/claims/link-run`,
   sources: `${apiBase}/api/sources`,
@@ -27,9 +29,17 @@ export const endpoints = {
   modularProbe: `${apiBase}/api/review/probes/modular`,
   hardware: `${apiBase}/api/workers/capabilities`,
   workers: `${apiBase}/api/workers`,
+  gpuSieveMetalStdioShutdown: `${apiBase}/api/workers/gpu-sieve-metal/stdio-shutdown`,
   sourceDelete: (sourceId) => `${apiBase}/api/sources/${sourceId}`,
   paper: `${apiBase}/api/paper`,
-  logs: `${apiBase}/api/logs`
+  logs: `${apiBase}/api/logs`,
+  benchMetalChunkPresets: `${apiBase}/api/bench/metal-chunk/presets`,
+  benchMetalChunkStatus: `${apiBase}/api/bench/metal-chunk/status`,
+  benchMetalChunkHistory: (limit = 25) => `${apiBase}/api/bench/metal-chunk/history?limit=${limit}`,
+  benchMetalChunkRun: `${apiBase}/api/bench/metal-chunk/run`,
+  benchMetalChunkRunDetail: (jobId) => `${apiBase}/api/bench/metal-chunk/runs/${jobId}`,
+  benchMetalChunkHallOfFame: (platform, limit = 30) =>
+    `${apiBase}/api/bench/metal-chunk/hall-of-fame?platform=${encodeURIComponent(platform)}&limit=${limit}`
 };
 
 export const tabs = [
@@ -39,6 +49,7 @@ export const tabs = [
   { id: "community", label: "Community" },
   { id: "evidence", label: "Evidence" },
   { id: "queue", label: "Operations" },
+  { id: "benchmark", label: "Benchmark" },
   { id: "paper", label: "Paper" },
   { id: "guide", label: "Guide" }
 ];
@@ -154,7 +165,8 @@ export const claimRunRelationOptions = ["supports", "tests", "refutes", "motivat
 export const directionGuide = {
   verification: {
     label: "Evidence track",
-    role: "Runs CPU/GPU sweeps, compares kernels, and falsifies weak heuristics.",
+    role:
+      "Runs CPU/GPU sweeps (Numba, native cpu-sieve where built, MPS/Metal gpu-sieve on macOS when configured), compares kernels, and falsifies weak heuristics.",
     success: "Finds reproducible evidence or real search-space reduction.",
     caution: "This is not the proof track by itself.",
     evidence: "run-heavy lane"
@@ -182,9 +194,11 @@ export const directionGuide = {
   },
   "hypothesis-sandbox": {
     label: "Hypothesis track",
-    role: "Generates and tests novel conjectures, residue ideas, and structural probes without promoting them as proof progress.",
+    role:
+      "Worker-rotated hypothesis probes, optional full battery and battery stability report from Operations → Theory, queued sandbox runs (including kernel probes and experimental kernels such as cpu-barina).",
     success: "Produces falsifiable hypotheses, plausible anomalies, or cleanly refuted ideas that sharpen the search.",
-    caution: "Outputs here are experimental ideas and evidence artifacts, not supported claims by default.",
+    caution:
+      "Outputs here are experimental ideas and evidence artifacts, not supported claims by default; Barina metrics are not the same contract as standard sieve validation.",
     evidence: "hypothesis and probe lane"
   }
 };
@@ -193,7 +207,8 @@ export const evidenceGuide = [
   {
     kind: "validated-result",
     title: "Validated result",
-    detail: "A run that passed an independent replay. This is high-trust computational evidence."
+    detail:
+      "A run that passed an independent replay against the agreed reference (for sieve-family kernels, odd-descent vs SoT). Strong computational evidence — still not a proof of the global conjecture."
   },
   {
     kind: "claim",

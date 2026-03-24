@@ -1,78 +1,78 @@
 {
-  "processed": 3000000000,
-  "last_processed": 3000000000,
+  "processed": 24000000000,
+  "last_processed": 1122000002000,
   "max_total_stopping_time": {
-    "n": 2610744987,
-    "value": 1050
+    "n": 1095955769823,
+    "value": 833
   },
   "max_stopping_time": {
-    "n": 2788008987,
-    "value": 729
+    "n": 1095955769823,
+    "value": 833
   },
   "max_excursion": {
-    "n": 1410123943,
-    "value": 7125885122794452160
+    "n": 1090655164287,
+    "value": 20134772944034909573176
   },
   "sample_records": [
     {
       "metric": "max_total_stopping_time",
-      "n": 1,
-      "value": 0
+      "n": 1074242027583,
+      "value": 595
     },
     {
       "metric": "max_stopping_time",
-      "n": 1,
-      "value": 0
+      "n": 1074242027583,
+      "value": 595
     },
     {
       "metric": "max_excursion",
-      "n": 1,
-      "value": 1
+      "n": 1074001094247,
+      "value": 9223372036854775807
     },
     {
       "metric": "max_total_stopping_time",
-      "n": 2,
-      "value": 1
+      "n": 1074330819327,
+      "value": 600
     },
     {
       "metric": "max_stopping_time",
-      "n": 2,
-      "value": 1
+      "n": 1074330819327,
+      "value": 600
     },
     {
       "metric": "max_excursion",
-      "n": 2,
-      "value": 2
+      "n": 1074252480511,
+      "value": 9223372036854775807
     },
     {
       "metric": "max_total_stopping_time",
-      "n": 3,
-      "value": 7
+      "n": 1074570246811,
+      "value": 631
     },
     {
       "metric": "max_stopping_time",
-      "n": 3,
-      "value": 6
+      "n": 1074570246811,
+      "value": 631
     },
     {
       "metric": "max_excursion",
-      "n": 3,
-      "value": 16
+      "n": 1074512451743,
+      "value": 9223372036854775807
     },
     {
       "metric": "max_total_stopping_time",
-      "n": 6,
-      "value": 8
-    },
-    {
-      "metric": "max_total_stopping_time",
-      "n": 7,
-      "value": 16
+      "n": 1074943881711,
+      "value": 595
     },
     {
       "metric": "max_stopping_time",
-      "n": 7,
-      "value": 11
+      "n": 1074943881711,
+      "value": 595
+    },
+    {
+      "metric": "max_excursion",
+      "n": 1074757390831,
+      "value": 9223372036854775807
     }
   ]
 }

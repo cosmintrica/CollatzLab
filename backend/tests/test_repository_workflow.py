@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from collatz_lab.repository import LabRepository
 from collatz_lab.schemas import MapVariant, ReviewRubric, RunStatus, SourceReviewMode, SourceStatus
-from collatz_lab.services import execute_run, generate_report, validate_run
+from collatz_lab.services import execute_run, generate_report
+from collatz_lab.validation import validate_run
 
 
 def test_repository_seeds_default_directions(repository: LabRepository):
@@ -102,6 +103,36 @@ def test_source_review_refreshes_note_and_snapshot(repository: LabRepository):
     assert history[1].review_status == SourceStatus.INTAKE
 
 
+def test_requeue_orphaned_does_not_duplicate_recovery_note(repository: LabRepository):
+    """If summary already contains the recovery sentence, do not append it again."""
+    recovery = "Recovered after worker restart; queued to resume from the last checkpoint."
+    run = repository.create_run(
+        direction_slug="verification",
+        name="already-tagged",
+        range_start=1,
+        range_end=100,
+    )
+    repository.register_worker(
+        name="idle-worker",
+        role="compute-agent",
+        hardware="cpu",
+        capabilities=[],
+    )
+    repository.update_run(
+        run.id,
+        status=RunStatus.RUNNING,
+        checkpoint={"next_value": 51, "last_processed": 50},
+        metrics={"processed": 50, "last_processed": 50},
+        summary=f"Progress. {recovery}",
+        started_at="2026-03-21T10:00:00+00:00",
+    )
+    n = repository.requeue_orphaned_runs()
+    assert n == 1
+    recovered = repository.get_run(run.id)
+    assert recovered.status == RunStatus.QUEUED
+    assert recovered.summary.count("Recovered after worker restart") == 1
+
+
 def test_register_worker_requeues_orphaned_running_runs(repository: LabRepository):
     run = repository.create_run(
         direction_slug="verification",
@@ -150,3 +181,16 @@ def test_delete_source_removes_reviews_and_files(repository: LabRepository):
     assert not (repository.settings.research_dir / "sources" / f"{source.id}.md").exists()
     assert not list((repository.settings.artifacts_dir / "reviews").glob(f"{source.id}-*.md"))
     assert not any(item.id == source.id for item in repository.list_sources())
+
+
+def test_append_run_summary(repository: LabRepository):
+    run = repository.create_run(
+        direction_slug="verification",
+        name="summary-append",
+        range_start=1,
+        range_end=10,
+    )
+    repository.update_run(run.id, summary="Line A.")
+    updated = repository.append_run_summary(run.id, "Line B (validator note).")
+    assert "Line A." in (updated.summary or "")
+    assert "Line B (validator note)." in (updated.summary or "")

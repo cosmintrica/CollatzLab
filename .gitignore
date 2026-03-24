@@ -44,6 +44,18 @@ backend/research/
 # Cursor / local IDE
 .cursor/
 
+# Native cpu-sieve (built on machine; OpenMP vs sequential)
+scripts/native_sieve_kit/libsieve_descent_native.dylib
+scripts/native_sieve_kit/libsieve_descent_native.so
+scripts/native_sieve_kit/sieve_descent
+
+# Metal gpu-sieve helper (build on machine)
+scripts/native_sieve_kit/metal/metal_sieve_chunk
+scripts/native_sieve_kit/metal/CollatzLabSieve.metallib
+scripts/native_sieve_kit/metal/CollatzLabSieve.air
+scripts/native_sieve_kit/metal/metal_lab_sieve_verify
+scripts/native_sieve_kit/metal/metal_sieve_verify
+
 # OS / editor noise
 Thumbs.db
 .DS_Store

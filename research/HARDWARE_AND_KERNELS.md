@@ -1,6 +1,6 @@
 # Hardware targets and kernel portability
 
-This note consolidates **where Collatz Lab should run** and **how we prepare kernels gradually**. It is planning documentation only: implementation follows in small steps (`hardware.py` adapters, detection, then optional backends).
+This note consolidates **where Collatz Lab should run** and **how we prepare kernels gradually**. It is planning documentation only: implementation follows in small steps (`collatz_lab/hardware/` package adapters, detection, then optional backends).
 
 ## Principles
 
@@ -29,7 +29,7 @@ This note consolidates **where Collatz Lab should run** and **how we prepare ker
 | NVIDIA mobile | Some laptop GPUs | CUDA if driver + toolkit align | Same stack when CUDA available |
 | AMD discrete | Radeon RX / workstation | **ROCm / HIP** (Numba ROCm or alternate JIT) | Not implemented; research spike |
 | Intel integrated / Arc | UHD, Iris, Arc | **oneAPI / SYCL / Level Zero**, or vendor samples | Not implemented; long-term option |
-| Apple integrated | M-series GPU | **Metal** (raw Metal, MPS, MLX, or indirect via another framework) | Not implemented; Numba does not target Metal today |
+| Apple integrated | M-series GPU | **PyTorch MPS** (used by Collatz Lab for `gpu-collatz-accelerated`; sieve uses CPU Numba parity path) | Implemented behind optional `backend[mps]` (Torch) |
 | Qualcomm Adreno | Phones, some WoA | OpenCL / Vulkan compute (theoretical) | Very long-term; low priority |
 | “Phone-class” SoC | iPhone / iPad class (A-series, etc.) | Not a lab worker target | Out of scope unless we define a separate minimal client; compute and OS constraints differ |
 
@@ -49,7 +49,10 @@ This note consolidates **where Collatz Lab should run** and **how we prepare ker
 ## Phased preparation (incremental)
 
 **Phase A — Detection and adapters (no new kernels required)**  
-- Split `hardware.py` into small OS/arch modules (Windows / Linux / macOS; x86_64 / ARM64).  
+- Phase A (done): `collatz_lab/hardware/` package with `constants`, `platform`, `windows_cuda`, `gpu`, `nvidia`, `discovery`, `selection`, `util`, `metrics`, `cpu_label`; public imports remain `from collatz_lab.hardware import …`.
+- **Phase A2 (smart inventory):** `hardware/gpu_inventory.py` always merges **nvidia-smi** with OS probes in `hardware/adapters/display.py` (`system_profiler`, `lspci`, `Win32_VideoController`). Duplicate NVIDIA rows from PCI/WMI are dropped when SMI already returned devices; hybrid laptops keep Intel/AMD/Apple rows. Each capability includes `metadata.smart_detection` (schema version, probes used, `collatz_gpu_executable`, `next_backends_research`, optional `signals` / `raw_snippet` for dev spikes). Non-CUDA rows keep `supported_kernels=[]`. CUDA remains the only executable GPU path until Phase B.
+- **CPU usage:** optional `psutil` (`backend[system]`); otherwise Windows performance counters, Linux `/proc/stat` delta, macOS without psutil leaves usage blank (browser Pressure API can still hint in the UI).
+- Next: flesh out richer arch adapters and optional **executable** non-CUDA backends (Phase B).  
 - Report: CPU vendor, model, core count, ISA; GPU vendor, model, driver, and whether **CUDA** (or future backends) probe as ready.  
 - Dashboard / worker: show this in capabilities JSON so runs are reproducible.
 
@@ -73,3 +76,5 @@ This note consolidates **where Collatz Lab should run** and **how we prepare ker
 ## Changelog
 
 - **2026-03-23** — Initial consolidation: CPU ISA matrix, integrated vs dedicated GPU, Apple Silicon / WoA / ARM Linux, NVIDIA/AMD/Intel/Qualcomm placeholders, phased rollout.
+- **2026-03-23** — Phase A2: smart GPU inventory (`gpu_inventory` + `adapters/display`) + cross-platform CPU usage probes; documented `backend[system]` for psutil.
+- **2026-03-23** — Phase A2b: `metadata.smart_detection` on CPU/GPU rows for automatic probe provenance and backend research hints; see [`SMART_DETECTION.md`](./SMART_DETECTION.md).

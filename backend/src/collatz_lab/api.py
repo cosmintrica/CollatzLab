@@ -3,7 +3,7 @@ from __future__ import annotations
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from .autopilot import AutopilotManager, run_autopilot_cycle
 from .config import Settings, write_env_updates
@@ -15,8 +15,11 @@ from .llm import (
 from .reddit_feed import fetch_subreddit_feed
 from .repository import LabRepository
 from .hypothesis import (
+    analyze_glide_structure,
     analyze_record_seeds,
     analyze_residue_classes,
+    analyze_residue_classes_stratified,
+    run_battery_scalability_report,
     run_hypothesis_battery,
     scan_trajectory_depths,
     test_stopping_time_growth,
@@ -47,7 +50,8 @@ from .schemas import (
     Worker,
 )
 from .logutil import is_noise_log_entry
-from .services import execute_run, generate_report, probe_modular_claim, validate_run
+from .services import execute_run, generate_report, probe_modular_claim
+from .validation import validate_run
 
 
 class CreateTaskRequest(BaseModel):
@@ -143,7 +147,17 @@ class ComputeProfileRequest(BaseModel):
 
 class HypothesisBatteryRequest(BaseModel):
     end: int = 50_000
-    moduli: list[int] = [3, 4, 6, 8, 12, 16]
+    # Omit modulus 8 here: the battery always runs stratified mod-8 separately (richer bins).
+    moduli: list[int] = Field(default_factory=lambda: [3, 4, 6, 12, 16, 24])
+
+
+class HypothesisBatteryStabilityRequest(BaseModel):
+    """Run the same structural probes at multiple range ends; flag status changes."""
+
+    endpoints: list[int] = Field(default_factory=lambda: [50_000, 200_000, 1_000_000])
+    glide_sample_cap: int = 8_000
+    stratified_bin_count: int = 8
+    persist: bool = False
 
 
 class ResidueClassRequest(BaseModel):
@@ -168,6 +182,39 @@ class GrowthRateRequest(BaseModel):
     start: int = 1
     end: int = 100_000
     bin_count: int = 20
+
+
+class StratifiedResidueRequest(BaseModel):
+    modulus: int = 8
+    start: int = 1
+    end: int = 100_000
+    odd_only: bool = True
+    bin_count: int = 8
+    z_threshold: float = 2.0
+    min_bins_consistent: int = 3
+    odd_stride: int = 1
+
+
+class GlideStructureRequest(BaseModel):
+    start: int = 1
+    end: int = 50_000
+    modulus: int = 8
+    sample_cap: int = 6_000
+    deviation_threshold: float = 0.02
+    bootstrap_reps: int = 400
+
+
+class MetalBenchRunRequest(BaseModel):
+    """Start a background Metal chunk sweep (macOS + native helper only)."""
+
+    preset: str = "standard"
+    quick: bool = True
+    linear_end: int = 0
+    reps: int = 3
+    warmup: int = 1
+    chunks_csv: str = ""
+    write_calibration: bool = True
+    pipeline_ab: bool = False
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -524,6 +571,109 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def worker_capabilities():
         return discover_hardware()
 
+    @app.get("/api/workers/gpu-sieve-metal")
+    def worker_gpu_sieve_metal_status():
+        """Diagnostics for native Metal ``gpu-sieve`` helper (macOS); inert metadata elsewhere."""
+        from collatz_lab.gpu_sieve_metal_runtime import diagnostics_native_metal_sieve
+
+        return diagnostics_native_metal_sieve()
+
+    @app.post("/api/workers/gpu-sieve-metal/stdio-shutdown")
+    def worker_gpu_sieve_metal_stdio_shutdown():
+        """Terminate the long-lived ``metal_sieve_chunk --stdio`` child (frees peak Metal/RAM)."""
+        from collatz_lab.gpu_sieve_metal_runtime import shutdown_metal_stdio_transport
+
+        shutdown_metal_stdio_transport()
+        return {"ok": True}
+
+    @app.get("/api/workers/cpu-sieve-native")
+    def worker_cpu_sieve_native_status():
+        """Diagnostics for optional native C ``cpu-sieve`` backend (Darwin/Linux .dylib/.so)."""
+        from collatz_lab.cpu_sieve_native_runtime import diagnostics_native_cpu_sieve
+
+        return diagnostics_native_cpu_sieve()
+
+    @app.get("/api/workers/native-stack")
+    def worker_native_stack_status():
+        """Single JSON: native ``cpu-sieve`` (.dylib/.so) + Metal ``gpu-sieve`` helper (any OS; fields may be inert)."""
+        from collatz_lab.cpu_sieve_native_runtime import diagnostics_native_cpu_sieve
+        from collatz_lab.gpu_sieve_metal_runtime import diagnostics_native_metal_sieve
+
+        return {
+            "cpu_sieve_native": diagnostics_native_cpu_sieve(),
+            "gpu_sieve_metal": diagnostics_native_metal_sieve(),
+        }
+
+    @app.get("/api/bench/metal-chunk/status")
+    def bench_metal_chunk_status():
+        """Whether a sweep is running; macOS + Metal helper flags."""
+        from collatz_lab.bench_metal_chunk import metal_benchmark_public_status
+
+        return metal_benchmark_public_status()
+
+    @app.get("/api/bench/metal-chunk/history")
+    def bench_metal_chunk_history(limit: int = 25):
+        """Recent Metal chunk benchmarks saved in local SQLite."""
+        return repository.list_metal_benchmark_runs(limit=limit)
+
+    @app.get("/api/bench/metal-chunk/presets")
+    def bench_metal_chunk_presets():
+        """Fixed, reproducible sweep definitions (same inputs on every machine)."""
+        from collatz_lab.bench_metal_presets import list_metal_bench_presets_public
+
+        return list_metal_bench_presets_public()
+
+    @app.get("/api/bench/metal-chunk/hall-of-fame")
+    def bench_metal_chunk_hall_of_fame(platform: str = "Darwin", limit: int = 25):
+        """Top local Metal chunk throughputs for a given OS (from saved completed runs)."""
+        allowed = {"Darwin", "Linux", "Windows"}
+        if platform not in allowed:
+            raise HTTPException(
+                status_code=400,
+                detail="platform must be one of: Darwin, Linux, Windows",
+            )
+        return repository.list_metal_benchmark_hall_of_fame(platform=platform, limit=limit)
+
+    @app.get("/api/bench/metal-chunk/runs/{job_id}")
+    def bench_metal_chunk_run_detail(job_id: str):
+        row = repository.get_metal_benchmark_run(job_id)
+        if row is None:
+            raise HTTPException(status_code=404, detail="Benchmark run not found.")
+        return row
+
+    @app.post("/api/bench/metal-chunk/run")
+    def bench_metal_chunk_run(request: MetalBenchRunRequest):
+        """Queue a background benchmark (one at a time per API process)."""
+        from collatz_lab.bench_metal_chunk import metal_benchmark_try_start
+        from collatz_lab.bench_metal_presets import resolve_metal_bench_params
+
+        raw = request.model_dump()
+        body = resolve_metal_bench_params(
+            preset=raw["preset"],
+            quick=raw["quick"],
+            linear_end=raw["linear_end"],
+            reps=raw["reps"],
+            warmup=raw["warmup"],
+            chunks_csv=raw["chunks_csv"],
+            write_calibration=raw["write_calibration"],
+            pipeline_ab=raw["pipeline_ab"],
+        )
+        out = metal_benchmark_try_start(repository, body)
+        if not out.get("started"):
+            msg = out.get("message") or "Could not start benchmark."
+            code = out.get("error_code")
+            if code == "wrong_platform":
+                raise HTTPException(status_code=400, detail=msg)
+            raise HTTPException(status_code=409, detail=msg)
+        return out
+
+    @app.get("/api/validation/contract")
+    def validation_contract():
+        """Platform-wide source-of-truth / validation contract metadata (no compute)."""
+        from collatz_lab.validation_source import validation_contract_metadata
+
+        return validation_contract_metadata()
+
     @app.post("/api/reports/generate")
     def report():
         path = generate_report(repository)
@@ -538,6 +688,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 repository,
                 end=request.end,
                 moduli=request.moduli,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/api/hypotheses/battery/stability")
+    def hypothesis_battery_stability(request: HypothesisBatteryStabilityRequest):
+        try:
+            return run_battery_scalability_report(
+                endpoints=request.endpoints,
+                glide_sample_cap=request.glide_sample_cap,
+                stratified_bin_count=request.stratified_bin_count,
+                repository=repository if request.persist else None,
+                persist=request.persist,
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -577,6 +740,38 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             bin_count=request.bin_count,
         )
         return result.__dict__
+
+    @app.post("/api/hypotheses/stratified-residue")
+    def hypothesis_stratified_residue(request: StratifiedResidueRequest):
+        try:
+            result = analyze_residue_classes_stratified(
+                request.modulus,
+                start=request.start,
+                end=request.end,
+                odd_only=request.odd_only,
+                bin_count=request.bin_count,
+                z_threshold=request.z_threshold,
+                min_bins_consistent=request.min_bins_consistent,
+                odd_stride=request.odd_stride,
+            )
+            return result.__dict__
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/api/hypotheses/glide-structure")
+    def hypothesis_glide_structure(request: GlideStructureRequest):
+        try:
+            result = analyze_glide_structure(
+                request.start,
+                request.end,
+                modulus=request.modulus,
+                sample_cap=request.sample_cap,
+                deviation_threshold=request.deviation_threshold,
+                bootstrap_reps=request.bootstrap_reps,
+            )
+            return result.__dict__
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.get("/api/paper")
     def get_paper():

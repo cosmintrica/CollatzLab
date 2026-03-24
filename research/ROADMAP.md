@@ -229,15 +229,15 @@ Priority improvements for `hypothesis.py` — do soon, before scaling the batter
 
 **Fix:** Bin seeds by log₂n (like `test_stopping_time_growth` already does), then compute residue class deviations *within* each bin. A class is anomalous only if it deviates consistently across multiple magnitude bins, not just in aggregate.
 
-**Deliverable:** New or upgraded `analyze_residue_classes_stratified()` that returns per-bin z-scores and an overall verdict.
+**Deliverable:** ✅ `analyze_residue_classes_stratified()` — per-bin z-scores + verdict; API `POST /api/hypotheses/stratified-residue`.
 
 ### 2. Glide / odd-step ratio analysis (new probe)
 
 **Problem:** The current battery tracks total stopping time and max excursion but ignores the *internal structure* of orbits — specifically the ratio of odd steps to even steps (glide). This ratio is directly linked to 2-adic descent behavior and is the core mechanism behind why orbits shrink.
 
-**Fix:** Extend `metrics_direct` to also return `odd_steps` count. Add a new hypothesis function that studies odd-step fraction per seed, per residue class mod 2^k, and per magnitude bin. Compare against the Terras heuristic (expected odd fraction ≈ log₂(3)⁻¹ ≈ 0.63).
+**Fix:** ~~Extend `metrics_direct`~~ Implemented via a **hypothesis-local** orbit walk using `collatz_step` (keeps the `NumberMetrics` contract unchanged). `analyze_glide_structure()` samples odd seeds and compares odd-step fraction to the Terras heuristic `1/log₂(3)`.
 
-**Deliverable:** New `analyze_glide_structure()` function in hypothesis.py, included in the battery.
+**Deliverable:** ✅ `analyze_glide_structure()` in `hypothesis.py`, included in the battery; API `POST /api/hypotheses/glide-structure`.
 
 ### 3. Battery scalability test (meta-analysis)
 
@@ -245,7 +245,9 @@ Priority improvements for `hypothesis.py` — do soon, before scaling the batter
 
 **Fix:** Run the battery at escalating ranges (50k → 200k → 1M) and compare status stability. Flag any hypothesis whose status flips between ranges. This is itself a hypothesis about hypothesis robustness.
 
-**Deliverable:** New `test_battery_scalability()` orchestrator or a CLI command that runs the battery at multiple scales and produces a stability report.
+**Deliverable:** ✅ `run_battery_scalability_report()` (alias `test_battery_scalability`); `POST /api/hypotheses/battery/stability`. On very large intervals, stratified analysis uses explicit `odd_stride` (see `odd_stride_by_scale` in the report).
+
+**High-signal finding workflow:** `docs/HIGH_SIGNAL_EVIDENCE.md`.
 
 ---
 

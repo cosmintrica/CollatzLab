@@ -7,8 +7,14 @@ from __future__ import annotations
 
 import pytest
 
+import collatz_lab.validation as collatz_validation
 from collatz_lab import services
-from collatz_lab.hardware import CPU_BARINA_KERNEL, CPU_PARALLEL_ODD_KERNEL, CPU_SIEVE_KERNEL
+from collatz_lab.hardware import (
+    CPU_BARINA_KERNEL,
+    CPU_PARALLEL_ODD_KERNEL,
+    CPU_SIEVE_KERNEL,
+    GPU_SIEVE_KERNEL,
+)
 from collatz_lab.hypothesis import (
     analyze_record_seeds,
     analyze_residue_classes,
@@ -20,13 +26,20 @@ from collatz_lab.hypothesis import (
 from collatz_lab.repository import LabRepository
 from collatz_lab.schemas import ComputeProfile, HypothesisStatus, RunStatus
 from collatz_lab.services import (
-    SELECTIVE_VALIDATION_THRESHOLD,
-    _compute_odd_only_reference,
     compute_range_metrics,
     compute_range_metrics_parallel_odd,
     compute_range_metrics_parallel_descent,
     compute_range_metrics_parallel_descent_odd,
     metrics_direct,
+    queue_randomized_compute_runs,
+    queue_research_snack_runs,
+)
+from collatz_lab.validation import (
+    SELECTIVE_VALIDATION_THRESHOLD,
+    _aggregate_validation_payload,
+    _compute_descent_odd_only_reference,
+    _compute_odd_only_reference,
+    _reference_aggregate_for_kernel,
     validate_run,
 )
 
@@ -251,9 +264,28 @@ class TestSelectiveValidator:
         assert validated.status == RunStatus.VALIDATED
         assert "descent reference" in validated.summary or "Validation passed" in validated.summary
 
+    def test_gpu_sieve_validation_reference_is_odd_descent_only(self):
+        """gpu-sieve is odd-only; validator must use the same reference as cpu-sieve.
+
+        Regression: using compute_range_metrics_parallel_descent (full contiguous range)
+        caused false validation failures (processed / aggregates differ from odd-only GPU path).
+        """
+        class _Run:
+            kernel = GPU_SIEVE_KERNEL
+
+        start, end = 100, 250
+        ref = _reference_aggregate_for_kernel(_Run(), start, end)
+        odd_ref = _compute_descent_odd_only_reference(start, end)
+        assert _aggregate_validation_payload(ref) == _aggregate_validation_payload(
+            odd_ref
+        )
+        full = services.compute_range_metrics_parallel_descent(start, end)
+        assert full.processed > odd_ref.processed
+        assert ref.processed == odd_ref.processed
+
     def test_selective_cpu_sieve_run_validates(self, repository: LabRepository, monkeypatch):
         """Large cpu-sieve runs should use selective validation against descent windows."""
-        monkeypatch.setattr(services, "SELECTIVE_VALIDATION_THRESHOLD", 50)
+        monkeypatch.setattr(collatz_validation, "SELECTIVE_VALIDATION_THRESHOLD", 50)
         run = repository.create_run(
             direction_slug="verification",
             name="sieve-selective-validation-test",
@@ -286,7 +318,7 @@ class TestSelectiveValidator:
     def test_selective_mode_for_large_run(self, repository: LabRepository, monkeypatch):
         """Runs above threshold should use selective validation."""
         # Temporarily lower the threshold to test selective mode
-        monkeypatch.setattr(services, "SELECTIVE_VALIDATION_THRESHOLD", 50)
+        monkeypatch.setattr(collatz_validation, "SELECTIVE_VALIDATION_THRESHOLD", 50)
         run = repository.create_run(
             direction_slug="verification",
             name="large-validation-test",
@@ -333,9 +365,10 @@ class TestHypothesisGenerators:
             HypothesisStatus.FALSIFIED,
         }
         assert result.evidence  # should have per-class data
-        assert len(result.evidence) == 3  # 3 classes mod 3
-        # Each evidence entry should have mean_tst
-        for entry in result.evidence:
+        assert result.evidence[0].get("report_meta")
+        class_rows = [e for e in result.evidence if "residue" in e and "mean_tst" in e]
+        assert len(class_rows) == 3  # 3 classes mod 3
+        for entry in class_rows:
             assert "mean_tst" in entry
             assert "z_score" in entry
 
@@ -343,7 +376,7 @@ class TestHypothesisGenerators:
         result = analyze_residue_classes(4, start=1, end=5000)
         assert result.category == "residue-class"
         # Mod 4 with odd_only=True means only residues 1 and 3 have data
-        odd_entries = [e for e in result.evidence if e["count"] > 0]
+        odd_entries = [e for e in result.evidence if e.get("count", 0) > 0]
         assert len(odd_entries) >= 2
 
     def test_residue_class_invalid_modulus(self):
@@ -377,6 +410,8 @@ class TestHypothesisGenerators:
         assert result.category == "algebraic-probe"
         assert result.evidence
         for bin_data in result.evidence:
+            if "bin" not in bin_data:
+                continue
             assert "mean_tst" in bin_data
             assert "predicted_tst" in bin_data
             assert "deviation_pct" in bin_data
@@ -391,6 +426,7 @@ class TestHypothesisGenerators:
         }
         assert result.evidence
         evidence = result.evidence[0]
+        assert evidence.get("report_meta")
         assert "tested" in evidence
         assert "confirmed" in evidence
         assert "counterexamples" in evidence
@@ -402,9 +438,9 @@ class TestHypothesisGenerators:
             repository, end=1000, moduli=[3, 4],
         )
         after_claims = len(repository.list_claims())
-        # 2 residue + 1 record + 1 trajectory + 1 growth + 1 mod-3 = 6
-        assert len(hypotheses) == 6
-        assert after_claims == before_claims + 6
+        # 2 residue + record + trajectory + growth + mod-3 + stratified + glide = 8
+        assert len(hypotheses) == 8
+        assert after_claims == before_claims + 8
         # Each hypothesis should have an id
         for h in hypotheses:
             assert h.id
@@ -415,8 +451,8 @@ class TestHypothesisGenerators:
         before_artifacts = len(repository.list_artifacts())
         run_hypothesis_battery(repository, end=500, moduli=[3])
         after_artifacts = len(repository.list_artifacts())
-        # 1 residue + 1 record + 1 trajectory + 1 growth + 1 mod-3 = 5 hypotheses, 5 artifacts
-        assert after_artifacts >= before_artifacts + 5
+        # 1 residue + record + trajectory + growth + mod-3 + stratified + glide = 7 artifacts
+        assert after_artifacts >= before_artifacts + 7
 
     def test_hypothesis_sandbox_direction_exists(self, repository: LabRepository):
         """The hypothesis-sandbox direction should be seeded."""
@@ -493,3 +529,94 @@ class TestComputeBudgetThrottle:
         assert services._compute_budget_throttle_seconds(
             hardware="cpu", profile=p100, compute_sec=2.0
         ) == 0.0
+
+
+class TestResearchSnackRuns:
+    def test_queue_research_snack_empty_when_continuous_off(self, repository: LabRepository):
+        repository.update_compute_profile(
+            continuous_enabled=False,
+            system_percent=100,
+            cpu_percent=100,
+            gpu_percent=100,
+        )
+        assert (
+            queue_research_snack_runs(
+                repository,
+                supported_hardware=["cpu"],
+                supported_kernels=[CPU_SIEVE_KERNEL, CPU_BARINA_KERNEL],
+            )
+            == []
+        )
+
+    def test_queue_research_snack_enqueues_once(self, repository: LabRepository):
+        repository.update_compute_profile(
+            continuous_enabled=True,
+            system_percent=100,
+            cpu_percent=100,
+            gpu_percent=100,
+        )
+        ids = queue_research_snack_runs(
+            repository,
+            supported_hardware=["cpu"],
+            supported_kernels=[CPU_SIEVE_KERNEL, CPU_BARINA_KERNEL],
+        )
+        assert len(ids) == 1
+        run = repository.get_run(ids[0])
+        assert run.status == RunStatus.QUEUED
+        assert run.owner == services.RESEARCH_AUTOPILOT_OWNER
+        assert run.kernel in {CPU_SIEVE_KERNEL, CPU_BARINA_KERNEL}
+        assert (
+            queue_research_snack_runs(
+                repository,
+                supported_hardware=["cpu"],
+                supported_kernels=[CPU_SIEVE_KERNEL, CPU_BARINA_KERNEL],
+            )
+            == []
+        )
+
+
+class TestRandomProbeRuns:
+    def test_queue_randomized_disabled(self, monkeypatch, repository: LabRepository):
+        monkeypatch.setenv("COLLATZ_RANDOM_PROBES", "0")
+        repository.update_compute_profile(
+            continuous_enabled=True,
+            system_percent=100,
+            cpu_percent=100,
+            gpu_percent=100,
+        )
+        assert (
+            queue_randomized_compute_runs(
+                repository,
+                supported_hardware=["cpu"],
+                supported_kernels=[CPU_SIEVE_KERNEL],
+            )
+            == []
+        )
+
+    def test_queue_randomized_enqueues_once(self, monkeypatch, repository: LabRepository):
+        monkeypatch.setenv("COLLATZ_RANDOM_PROBES", "1")
+        monkeypatch.setenv("COLLATZ_RANDOM_SEED", "987654")
+        repository.update_compute_profile(
+            continuous_enabled=True,
+            system_percent=100,
+            cpu_percent=100,
+            gpu_percent=100,
+        )
+        ids = queue_randomized_compute_runs(
+            repository,
+            supported_hardware=["cpu"],
+            supported_kernels=[CPU_SIEVE_KERNEL],
+        )
+        assert len(ids) == 1
+        run = repository.get_run(ids[0])
+        assert run.status == RunStatus.QUEUED
+        assert run.owner == services.RANDOM_PROBE_OWNER
+        assert run.kernel == CPU_SIEVE_KERNEL
+        assert (
+            queue_randomized_compute_runs(
+                repository,
+                supported_hardware=["cpu"],
+                supported_kernels=[CPU_SIEVE_KERNEL],
+            )
+            == []
+        )

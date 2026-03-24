@@ -1,78 +1,78 @@
 {
-  "processed": 3000000000,
-  "last_processed": 6000000000,
+  "processed": 24000000000,
+  "last_processed": 1218000002000,
   "max_total_stopping_time": {
-    "n": 4890328815,
-    "value": 1131
+    "n": 1176549020911,
+    "value": 861
   },
   "max_stopping_time": {
-    "n": 3136510111,
-    "value": 724
+    "n": 1176549020911,
+    "value": 861
   },
   "max_excursion": {
-    "n": 3172778873,
-    "value": 7125885122794452160
+    "n": 1197999190687,
+    "value": 60471110903508179864008
   },
   "sample_records": [
     {
       "metric": "max_total_stopping_time",
-      "n": 3000000001,
-      "value": 360
+      "n": 1170048658879,
+      "value": 608
     },
     {
       "metric": "max_stopping_time",
-      "n": 3000000001,
-      "value": 3
+      "n": 1170048658879,
+      "value": 608
     },
     {
       "metric": "max_excursion",
-      "n": 3000000001,
-      "value": 54736736416
-    },
-    {
-      "metric": "max_stopping_time",
-      "n": 3000000003,
-      "value": 6
-    },
-    {
-      "metric": "max_stopping_time",
-      "n": 3000000007,
-      "value": 11
-    },
-    {
-      "metric": "max_stopping_time",
-      "n": 3000000027,
-      "value": 65
-    },
-    {
-      "metric": "max_excursion",
-      "n": 3000000027,
-      "value": 701421348256
+      "n": 1170005234331,
+      "value": 9223372036854775807
     },
     {
       "metric": "max_total_stopping_time",
-      "n": 3000000155,
-      "value": 435
-    },
-    {
-      "metric": "max_excursion",
-      "n": 3000000510,
-      "value": 1108419099208
+      "n": 1170300186831,
+      "value": 701
     },
     {
       "metric": "max_stopping_time",
-      "n": 3000000511,
-      "value": 78
+      "n": 1170300186831,
+      "value": 701
     },
     {
       "metric": "max_excursion",
-      "n": 3000000511,
-      "value": 1167717240304
+      "n": 1170286705135,
+      "value": 9223372036854775807
+    },
+    {
+      "metric": "max_total_stopping_time",
+      "n": 1170650134975,
+      "value": 667
+    },
+    {
+      "metric": "max_stopping_time",
+      "n": 1170650134975,
+      "value": 667
     },
     {
       "metric": "max_excursion",
-      "n": 3000000700,
-      "value": 1997407338496
+      "n": 1170500241223,
+      "value": 9223372036854775807
+    },
+    {
+      "metric": "max_total_stopping_time",
+      "n": 1170806678975,
+      "value": 722
+    },
+    {
+      "metric": "max_stopping_time",
+      "n": 1170806678975,
+      "value": 722
+    },
+    {
+      "metric": "max_excursion",
+      "n": 1170765227135,
+      "value": 9223372036854775807
     }
   ]
 }

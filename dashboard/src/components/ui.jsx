@@ -41,12 +41,19 @@ export function SummaryCard({ label, value, note }) {
   );
 }
 
-export function SectionIntro({ title, text, action }) {
+export function SectionIntro({ title, text, action, stackAction = false }) {
+  const introClass = ["section-intro", stackAction ? "section-intro--stacked" : null].filter(Boolean).join(" ");
+  const body =
+    typeof text === "string" || typeof text === "number" ? (
+      <p>{text}</p>
+    ) : (
+      <div className="section-intro__rich">{text}</div>
+    );
   return (
-    <div className="section-intro">
-      <div>
+    <div className={introClass}>
+      <div className="section-intro__textblock">
         <h2>{title}</h2>
-        <p>{text}</p>
+        {body}
       </div>
       {action}
     </div>
@@ -109,9 +116,9 @@ export function FilterField({ label, children }) {
   );
 }
 
-export function FilterBar({ onClear, clearLabel = "Clear filters", children }) {
+export function FilterBar({ onClear, clearLabel = "Clear filters", children, className = "" }) {
   return (
-    <div className="filter-bar">
+    <div className={["filter-bar", className].filter(Boolean).join(" ")}>
       {children}
       <button className="secondary-button" type="button" onClick={onClear}>
         {clearLabel}

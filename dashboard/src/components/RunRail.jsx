@@ -1,10 +1,10 @@
 import { StatusPill } from "./ui.jsx";
 import { describeRunPurpose, describeRunStatusDetail, runRangeMagnitude, formatCompactTimestamp } from "../utils.js";
-import { runProgress } from "../orbitCalc.js";
+import { runProgress, runTimingMicroSuffix } from "../orbitCalc.js";
 
 import { memo } from "react";
 
-export default memo(function RunRail({ runs, selectedRunId, onSelectRun }) {
+export default memo(function RunRail({ runs, selectedRunId, onSelectRun, speedPollRef }) {
   return (
     <aside className="panel run-rail">
       <div className="run-rail-header">
@@ -32,7 +32,10 @@ export default memo(function RunRail({ runs, selectedRunId, onSelectRun }) {
                   <strong>{run.id}</strong>
                   <StatusPill value={run.status} />
                 </div>
-                <span className="ts-micro">{formatCompactTimestamp(run.finished_at || run.started_at || run.created_at)}</span>
+                <span className="ts-micro run-rail-ts">
+                  {formatCompactTimestamp(run.finished_at || run.started_at || run.created_at)}
+                  {runTimingMicroSuffix(run, { pollRef: speedPollRef })}
+                </span>
                 <span className="run-rail-name">{run.name}</span>
                 <span className="run-rail-meta">{run.kernel} | {run.hardware}</span>
                 <span className="run-rail-purpose">{purpose}</span>
